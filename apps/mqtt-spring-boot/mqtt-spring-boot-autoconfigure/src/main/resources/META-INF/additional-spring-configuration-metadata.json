@@ -1,0 +1,49 @@
+{
+  "properties": [
+    {
+      "name": "mqtt.session-expiry",
+      "type": "java.time.Duration",
+      "defaultValue": "4294967295s",
+      "description": "How long the broker keeps this client's session, and everything queued for it, after a disconnect. Defaults to the MQTT 5 maximum (a 32-bit second count), i.e. never. This is not message expiry: anything queued while the client is away should generally outlive the outage."
+    },
+    {
+      "name": "mqtt.username",
+      "type": "java.lang.String",
+      "description": "Broker username. Leave unset for an anonymous broker."
+    },
+    {
+      "name": "mqtt.password",
+      "type": "java.lang.String",
+      "description": "Broker password. Supply from a secret store, never a checked-in properties file."
+    },
+    {
+      "name": "mqtt.ssl.trust-store-password",
+      "type": "java.lang.String",
+      "description": "Password for the PKCS12 truststore."
+    }
+  ],
+  "hints": [
+    {
+      "name": "mqtt.url",
+      "values": [
+        { "value": "ssl://broker:8883", "description": "TLS. What production should use." },
+        { "value": "tcp://localhost:1883", "description": "Plaintext. Local development only." }
+      ]
+    },
+    {
+      "name": "mqtt.qos",
+      "values": [
+        { "value": 0, "description": "At most once. Loses messages on an unreliable link." },
+        { "value": 1, "description": "At least once. The default; expect duplicates and handle them idempotently." },
+        { "value": 2, "description": "Exactly once. Two extra round trips per message." }
+      ]
+    },
+    {
+      "name": "mqtt.persistence-directory",
+      "values": [
+        { "value": "", "description": "In-memory: in-flight QoS 1 messages are lost on restart." }
+      ],
+      "providers": [ { "name": "any" } ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+# ============================================================================
+# CLOUD BROKER ACL
+#
+# The topic scheme is site-first (sites/<site>/...) precisely so that this file
+# can express the tenant boundary as a prefix. A site's credential is confined
+# to its own subtree: a compromised site-1 gateway cannot publish telemetry as
+# site 2, nor read site 2's commands.
+# ============================================================================
+
+# --- the cloud Spring Boot service ------------------------------------------
+# Reads every site; writes only command requests.
+user cloud-app
+topic read  sites/+/telemetry/+
+topic read  sites/+/health/+
+topic read  sites/+/command/+/res
+topic write sites/+/command/+/req
+topic read  sites/+/bridge/state
+topic read  $SYS/#
+
+# --- site 1 gateway bridge --------------------------------------------------
+# Note this cannot collapse to `sites/site1/#`: the bridge must WRITE telemetry
+# and health but only READ commands, and granting write on the whole subtree
+# would let a site inject commands addressed to its own devices -- bypassing the
+# cloud entirely, and with it every authorisation check that lives there.
+user bridge-site1
+topic write sites/site1/telemetry/+
+topic write sites/site1/health/+
+topic write sites/site1/command/+/res
+topic read  sites/site1/command/+/req
+topic write sites/site1/bridge/state
+
+# --- site 2 gateway bridge --------------------------------------------------
+user bridge-site2
+topic write sites/site2/telemetry/+
+topic write sites/site2/health/+
+topic write sites/site2/command/+/res
+topic read  sites/site2/command/+/req
+topic write sites/site2/bridge/state
+
+# --- read-only inspection account (MQTT Explorer UI) ------------------------
+# Sees everything, changes nothing. With a site-first scheme this is one line.
+# Kept separate from cloud-app so the debugging tool can never publish a command
+# by accident, and so its access can be revoked without touching the service.
+user observer
+topic read sites/#
+topic read $SYS/#

@@ -1,0 +1,283 @@
+# =============================================================================
+#  Cloud <- bridge -> edge MQTT demo
+#
+#  NETWORK TOPOLOGY (this is the important part of the file)
+#
+#      site1-lan            wan               site2-lan
+#   ┌─────────────┐   ┌──────────────┐   ┌─────────────┐
+#   │  edge-app   │   │              │   │  edge-app   │
+#   │      │      │   │  cloud-app   │   │      │      │
+#   │      ▼      │   │      │       │   │      ▼      │
+#   │ edge-broker ├───┤ cloud-broker ├───┤ edge-broker │
+#   └─────────────┘   └──────────────┘   └─────────────┘
+#
+#  Each edge app can only reach its own site broker: it is not attached to the
+#  `wan` network at all, so it *cannot* talk to the cloud even by accident.
+#  Only the edge brokers straddle both networks, and only they carry traffic
+#  across the WAN. That is enforced by Docker here rather than by convention.
+#
+#  Because of that, `scripts/chaos.sh site1 down` -- which just detaches
+#  edge-broker-site1 from the `wan` network -- is a faithful simulation of the
+#  site losing its uplink: the site keeps running, the bridge starts spooling,
+#  and nothing in either application notices.
+# =============================================================================
+
+name: jinternals-mqtt
+
+x-app-common: &app-common
+  restart: unless-stopped
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  deploy:
+    resources:
+      limits:
+        memory: 512M
+
+x-broker-common: &broker-common
+  image: eclipse-mosquitto:2.0.22
+  restart: unless-stopped
+  stop_grace_period: 15s
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+networks:
+  # The long-haul link. Only brokers sit here.
+  wan:
+    name: jinternals_wan
+  site1-lan:
+    name: jinternals_site1
+  site2-lan:
+    name: jinternals_site2
+
+volumes:
+  mqtt-ui-config:
+  cloud-broker-data:
+  edge1-broker-data:
+  edge2-broker-data:
+  cloud-app-state:
+  edge1-app-state:
+  edge2-app-state:
+
+services:
+
+  # ===========================================================================
+  # CLOUD
+  # ===========================================================================
+  cloud-broker:
+    <<: *broker-common
+    container_name: cloud-broker
+    networks: [wan]
+    ports:
+      - "8883:8883"        # TLS, for mosquitto_sub from your laptop
+    volumes:
+      - ./broker/cloud/config:/mosquitto/config:ro
+      - ./certs:/mosquitto/certs:ro
+      - cloud-broker-data:/mosquitto/data
+    healthcheck:
+      # -E exits as soon as the CONNACK+SUBACK arrives, so this proves the
+      # listener, TLS chain, credentials and ACL all work -- not just that the
+      # port is open.
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/broker/uptime' -E -W 3 -u cloud-app -P \"$$CLOUD_APP_PASSWORD\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    environment:
+      CLOUD_APP_PASSWORD: ${CLOUD_APP_PASSWORD:?run ./scripts/bootstrap.sh first}
+
+  cloud-app:
+    <<: *app-common
+    container_name: cloud-app
+    build:
+      context: ./apps
+      dockerfile: cloud-service/Dockerfile
+    image: jinternals/mqtt-cloud-service:1.0.0
+    networks: [wan]
+    ports:
+      - "8080:8080"
+    depends_on:
+      cloud-broker:
+        condition: service_healthy
+    volumes:
+      - ./certs/truststore.p12:/etc/mqtt/truststore.p12:ro
+      - cloud-app-state:/var/lib/mqtt-client
+    environment:
+      MQTT_URL: ssl://cloud-broker:8883
+      MQTT_USERNAME: cloud-app
+      MQTT_PASSWORD: ${CLOUD_APP_PASSWORD:?}
+      MQTT_TRUSTSTORE: /etc/mqtt/truststore.p12
+      MQTT_TRUSTSTORE_PASSWORD: ${TRUSTSTORE_PASSWORD:?}
+      HEALTH_TIMEOUT: 60s
+      DEFAULT_COMMAND_TTL: 15m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  # ===========================================================================
+  # SITE 1  -- fulfilment centre with a flaky uplink
+  # ===========================================================================
+  edge-broker-site1:
+    <<: *broker-common
+    container_name: edge-broker-site1
+    # Straddles both networks: this is the only thing at site 1 that can see
+    # the WAN, and detaching it from `wan` is how the outage demo works.
+    networks: [wan, site1-lan]
+    ports:
+      - "18883:8883"
+    volumes:
+      - ./broker/edge-site1/config:/mosquitto/config:ro
+      - ./certs:/mosquitto/certs:ro
+      - edge1-broker-data:/mosquitto/data
+    # Deliberately NOT depends_on cloud-broker: a site must come up and start
+    # buffering whether or not the cloud is reachable.
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/broker/uptime' -E -W 3 -u edge-app -P \"$$EDGE_APP_PASSWORD\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    environment:
+      EDGE_APP_PASSWORD: ${EDGE_APP_PASSWORD:?}
+
+  edge-app-site1:
+    <<: *app-common
+    container_name: edge-app-site1
+    build:
+      context: ./apps
+      dockerfile: edge-service/Dockerfile
+    image: jinternals/mqtt-edge-service:1.0.0
+    # Note: site1-lan ONLY. This container has no route to the cloud broker.
+    networks: [site1-lan]
+    ports:
+      - "8081:8080"
+    depends_on:
+      edge-broker-site1:
+        condition: service_healthy
+    volumes:
+      - ./certs/truststore.p12:/etc/mqtt/truststore.p12:ro
+      - edge1-app-state:/var/lib/mqtt-client
+    environment:
+      SITE_ID: site1
+      # Two robotic arms and a humanoid working this site's pick face.
+      SITE_ROBOTS: arm-01,arm-02,humanoid-03
+      TELEMETRY_INTERVAL: 5s
+      HEALTH_INTERVAL: 15s
+      MQTT_URL: ssl://edge-broker-site1:8883
+      MQTT_USERNAME: edge-app
+      MQTT_PASSWORD: ${EDGE_APP_PASSWORD:?}
+      MQTT_TRUSTSTORE: /etc/mqtt/truststore.p12
+      MQTT_TRUSTSTORE_PASSWORD: ${TRUSTSTORE_PASSWORD:?}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  # ===========================================================================
+  # SITE 2  -- identical images, different site id and cell inventory
+  # ===========================================================================
+  edge-broker-site2:
+    <<: *broker-common
+    container_name: edge-broker-site2
+    networks: [wan, site2-lan]
+    ports:
+      - "28883:8883"
+    volumes:
+      - ./broker/edge-site2/config:/mosquitto/config:ro
+      - ./certs:/mosquitto/certs:ro
+      - edge2-broker-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -p 1883 -t '$$SYS/broker/uptime' -E -W 3 -u edge-app -P \"$$EDGE_APP_PASSWORD\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    environment:
+      EDGE_APP_PASSWORD: ${EDGE_APP_PASSWORD:?}
+
+  edge-app-site2:
+    <<: *app-common
+    container_name: edge-app-site2
+    build:
+      context: ./apps
+      dockerfile: edge-service/Dockerfile
+    image: jinternals/mqtt-edge-service:1.0.0
+    networks: [site2-lan]
+    ports:
+      - "8082:8080"
+    depends_on:
+      edge-broker-site2:
+        condition: service_healthy
+    volumes:
+      - ./certs/truststore.p12:/etc/mqtt/truststore.p12:ro
+      - edge2-app-state:/var/lib/mqtt-client
+    environment:
+      SITE_ID: site2
+      SITE_ROBOTS: arm-11,humanoid-12
+      TELEMETRY_INTERVAL: 5s
+      HEALTH_INTERVAL: 15s
+      MQTT_URL: ssl://edge-broker-site2:8883
+      MQTT_USERNAME: edge-app
+      MQTT_PASSWORD: ${EDGE_APP_PASSWORD:?}
+      MQTT_TRUSTSTORE: /etc/mqtt/truststore.p12
+      MQTT_TRUSTSTORE_PASSWORD: ${TRUSTSTORE_PASSWORD:?}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/actuator/health/readiness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  # ===========================================================================
+  # MQTT UI  (opt-in:  docker compose --profile ui up -d)
+  #
+  # MQTT Explorer, web edition. It renders the live topic TREE, which is the
+  # thing you actually want when the question is "what does site 1 publish?" --
+  # telemetry/site1/... and health/site1/... appear as browsable branches with
+  # the retained value on each leaf.
+  #
+  # It proxies MQTT server-side over socket.io, so the browser needs no
+  # WebSocket listener on the brokers and no copy of our private CA.
+  #
+  # Two deliberate choices:
+  #  * It connects on port 1883, the plaintext listener that is bound to the
+  #    container networks and never published to the host. That listener exists
+  #    precisely for local ops tooling like this; nothing crosses the WAN in
+  #    clear text.
+  #  * It is the ONLY container attached to all three networks. That is the
+  #    point of an observation host: it stands in for someone with on-site
+  #    access, and it means you can keep watching a site's broker spool while
+  #    its WAN uplink is cut.
+  # ===========================================================================
+  mqtt-ui:
+    image: smeagolworms4/mqtt-explorer:latest
+    container_name: mqtt-ui
+    profiles: ["ui"]
+    restart: unless-stopped
+    networks: [wan, site1-lan, site2-lan]
+    ports:
+      - "8090:4000"
+    environment:
+      HTTP_PORT: 4000
+      # Preseeded by scripts/bootstrap.sh: cloud, site 1 and site 2 are already
+      # listed when the page opens, using a read-only `observer` account that can
+      # watch everything and publish nothing.
+      INITIAL_CONFIG: ${MQTT_UI_INITIAL_CONFIG:?run ./scripts/bootstrap.sh first}
+    volumes:
+      - mqtt-ui-config:/mqtt-explorer/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

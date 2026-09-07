@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Aggregator for the two starter modules.
+
+  The split follows Spring's own convention:
+
+    mqtt-spring-boot-autoconfigure   the code and the @AutoConfiguration classes.
+                                     Its third-party dependencies are <optional>,
+                                     so they are NOT forced on a consumer.
+
+    mqtt-spring-boot-starter         dependencies only. Pulls in the
+                                     auto-configuration plus the opinionated set
+                                     of libraries it expects at runtime.
+
+  The point of the split is choice: depend on the starter and everything is
+  decided for you; depend on the autoconfigure module and you supply your own
+  Paho / Jackson / Micrometer versions, which is what a consumer with an existing
+  MQTT stack, or one resolving a CVE ahead of our release cadence, actually needs.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.jinternals.mqtt</groupId>
+  <artifactId>mqtt-spring-boot</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <name>mqtt-spring-boot</name>
+  <description>Durable MQTT client support for Spring Boot</description>
+
+  <modules>
+    <module>mqtt-spring-boot-autoconfigure</module>
+    <module>mqtt-spring-boot-starter</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <spring-boot.version>3.5.16</spring-boot.version>
+    <paho.mqttv5.version>1.2.5</paho.mqttv5.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.eclipse.paho</groupId>
+        <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+        <version>${paho.mqttv5.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.jinternals.mqtt</groupId>
+        <artifactId>mqtt-spring-boot-autoconfigure</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>

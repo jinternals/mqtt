@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Dependencies only – no source, by design. This is the artifact an application
+  depends on to get every decision made for it: the auto-configuration plus the
+  runtime libraries it expects.
+
+  Anyone who wants a different Paho or Jackson version skips this and depends on
+  mqtt-spring-boot-autoconfigure directly, where those are <optional>.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.jinternals.mqtt</groupId>
+    <artifactId>mqtt-spring-boot</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>mqtt-spring-boot-starter</artifactId>
+  <name>mqtt-spring-boot-starter</name>
+  <description>Starter for durable MQTT messaging with Spring Boot</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.jinternals.mqtt</groupId>
+      <artifactId>mqtt-spring-boot-autoconfigure</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.paho</groupId>
+      <artifactId>org.eclipse.paho.mqttv5.client</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.datatype</groupId>
+      <artifactId>jackson-datatype-jsr310</artifactId>
+    </dependency>
+  </dependencies>
+</project>

@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Standalone build. There is no parent aggregator and no shared module by design:
+  the cloud service and the gateway agent are independently deployable and are
+  released on schedules that have nothing to do with each other. Building one
+  never compiles, tests or even reads the other.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.16</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.jinternals.mqtt</groupId>
+  <artifactId>cloud-service</artifactId>
+  <version>1.0.0</version>
+  <name>cloud-service</name>
+  <description>Fleet service: issues commands, ingests telemetry and health from every site</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+    <!-- MQTT plumbing: connection, TLS, Last Will, reconnect, health, metrics.
+         Brings Paho transitively. The wire contract (Topics + the payload
+         records) is deliberately NOT shared – see the note in Topics.java. -->
+    <dependency>
+      <groupId>com.jinternals.mqtt</groupId>
+      <artifactId>mqtt-spring-boot-starter</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>cloud-service</finalName>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <mainClass>com.jinternals.mqtt.cloud.CloudServiceApplication</mainClass>
+          <!-- Layered jar so Docker caches dependencies separately from
+               application code: a code-only change ships a few hundred kB. -->
+          <layers><enabled>true</enabled></layers>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

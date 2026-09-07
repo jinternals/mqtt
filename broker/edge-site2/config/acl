@@ -1,0 +1,24 @@
+# ============================================================================
+# EDGE BROKER ACL -- site2
+#
+# Only this site's application connects here. It is confined to its own site
+# prefix so a misconfigured app cannot publish into another site's namespace --
+# which the bridge would otherwise forward to the cloud in good faith.
+#
+# The bridge itself is internal to mosquitto and is not subject to this file;
+# it is authorised on the CLOUD side as the bridge-site2 user.
+# ============================================================================
+
+user edge-app
+topic write sites/site2/telemetry/+
+topic write sites/site2/health/+
+topic read  sites/site2/command/+/req
+topic write sites/site2/command/+/res
+topic read  $SYS/#
+
+# --- read-only inspection account (MQTT Explorer UI) ------------------------
+# Attached to this site's LAN, so it can keep watching the local broker spool
+# while the WAN uplink is cut -- which is the whole point of looking.
+user observer
+topic read sites/#
+topic read $SYS/#

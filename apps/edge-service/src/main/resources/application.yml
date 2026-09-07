@@ -1,0 +1,76 @@
+# ============================================================================
+# Edge (site gateway) service
+# Everything environment-specific comes from the environment. The image is
+# identical for site 1 and site 2; only SITE_ID and the broker host differ.
+# ============================================================================
+spring:
+  application:
+    name: edge-service
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+  lifecycle:
+    # Let in-flight commands finish and the clean DISCONNECT go out before the
+    # JVM exits -- otherwise every deploy fires a spurious Last Will.
+    timeout-per-shutdown-phase: 20s
+
+server:
+  port: 8080
+  shutdown: graceful
+
+app:
+  edge:
+    site-id: ${SITE_ID}
+    robots: ${SITE_ROBOTS}
+    telemetry-interval: ${TELEMETRY_INTERVAL:5s}
+    health-interval: ${HEALTH_INTERVAL:15s}
+    command-dedupe-window: 1000
+
+mqtt:
+  # The LOCAL site broker. This service never dials the cloud.
+  url: ${MQTT_URL}
+  # Stable across restarts: it is the key to our persistent session.
+  client-id: edge-${SITE_ID}
+  username: ${MQTT_USERNAME}
+  password: ${MQTT_PASSWORD}
+  clean-start: false
+  # Never. Anything queued for us while we are away is telemetry or health,
+  # and neither expires. Commands are the only thing in this system with a
+  # deadline, and it lives on the message, not on the session.
+  session-expiry: 4294967295s
+  qos: 1
+  keep-alive: 20s
+  connection-timeout: 10s
+  max-reconnect-delay: 30s
+  # CLIENT-side store of messages published but not yet acknowledged. Note this is
+  # NOT the store-and-forward buffer -- that is the BROKER's persistence_location.
+  # Publishing to a broker on the same LAN is acknowledged in ~1ms, so this stays
+  # empty in practice; it exists to cover a crash inside that window. Mounted on a
+  # volume so that window is actually covered rather than merely appearing to be.
+  persistence-directory: /var/lib/mqtt-client
+  ssl:
+    trust-store: ${MQTT_TRUSTSTORE:}
+    trust-store-password: ${MQTT_TRUSTSTORE_PASSWORD:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      site: ${SITE_ID}
+
+logging:
+  level:
+    root: INFO
+    com.jinternals.mqtt: INFO
+    org.eclipse.paho: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{site:-}] %logger{28} - %msg%n"

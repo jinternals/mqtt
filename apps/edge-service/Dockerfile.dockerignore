@@ -1,0 +1,10 @@
+# Per-Dockerfile ignore (BuildKit): applies only when building with
+# `-f cloud-service/Dockerfile`. It restores the isolation the narrower
+# per-service build context used to give, now that the context has to be apps/
+# so Maven can see the in-repo starter: the edge service's source never reaches
+# the daemon at all, let alone the image.
+cloud-service/
+
+# Build output and local state never belong in a build context.
+**/target/
+**/*.iml

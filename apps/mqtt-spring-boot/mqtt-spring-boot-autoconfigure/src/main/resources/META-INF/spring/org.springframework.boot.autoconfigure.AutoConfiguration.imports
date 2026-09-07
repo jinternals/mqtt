@@ -1,0 +1,2 @@
+com.jinternals.mqtt.spring.autoconfigure.MqttAutoConfiguration
+com.jinternals.mqtt.spring.autoconfigure.MqttHealthAutoConfiguration
