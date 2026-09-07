@@ -45,16 +45,44 @@ and each one gets it slightly wrong.
 call that always succeeds in single-digit milliseconds.** The WAN link is owned
 entirely by the Mosquitto bridge between the site broker and the cloud broker.
 
+```mermaid
+flowchart LR
+    subgraph S1["site1-lan · fulfilment centre"]
+        direction TB
+        EA1["edge-app-site1<br/><small>arm-01 · arm-02 · humanoid-03</small>"]
+        EB1[("edge-broker-site1<br/><small>disk spool</small>")]
+        EA1 -->|"8883 TLS · ~1 ms<br/>always succeeds"| EB1
+    end
+
+    subgraph S2["site2-lan · fulfilment centre"]
+        direction TB
+        EA2["edge-app-site2<br/><small>arm-11 · humanoid-12</small>"]
+        EB2[("edge-broker-site2<br/><small>disk spool</small>")]
+        EA2 -->|"8883 TLS"| EB2
+    end
+
+    subgraph W["cloud"]
+        direction TB
+        CB[("cloud-broker<br/><small>persistent session per site</small>")]
+        CA["cloud-app<br/><small>REST :8080</small>"]
+        CB <-->|"8883 TLS"| CA
+    end
+
+    EB1 ===>|"bridge · dials out<br/><b>the only unreliable hop</b>"| CB
+    EB2 ===>|"bridge · dials out"| CB
+
+    classDef app fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef broker fill:#fef3c7,stroke:#d97706,color:#0f172a
+    class EA1,EA2,CA app
+    class EB1,EB2,CB broker
+    style S1 fill:#f8fafc,stroke:#cbd5e1
+    style S2 fill:#f8fafc,stroke:#cbd5e1
+    style W fill:#eef2ff,stroke:#a5b4fc
 ```
-        site1-lan                    wan                    site2-lan
-   ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-   │    edge-app      │      │    cloud-app     │      │    edge-app      │
-   │        │ 8883    │      │        │ 8883    │      │        │ 8883    │
-   │        ▼         │      │        ▼         │      │        ▼         │
-   │ edge-broker ─────┼──────┤   cloud-broker   ├──────┼───── edge-broker │
-   └──────────────────┘ TLS  └──────────────────┘ TLS  └──────────────────┘
-                        bridge                  bridge
-```
+
+Sites **dial out** — they are behind NAT with no stable address, so the cloud can
+never initiate. Everything reaching a site rides a connection the site opened.
+
 
 The bridge reconnects with backoff, holds a persistent session on the cloud side,
 and spools to disk while the link is down. When connectivity returns it drains the
@@ -121,6 +149,45 @@ curl -s -XPOST localhost:8080/api/v1/sites/site1/robots/arm-01/commands \
 ./scripts/chaos.sh site1 up     # ~5-30s later the bridge reconnects
 ```
 
+Both directions during one outage, and why they behave differently:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant CA as cloud-app
+    participant CB as cloud-broker
+    participant EB as edge-broker-site1
+    participant EA as edge-app-site1
+
+    Note over CB,EB: bridge UP
+    EA->>EB: telemetry seq=41
+    EB->>CB: forwarded (~4 ms)
+
+    rect rgba(220,38,38,0.10)
+        Note over CB,EB: ✂ uplink cut — the cells keep picking
+        Op->>CA: POST /commands PICK_ITEM
+        CA->>CB: publish (expiry 15 min)
+        CA-->>Op: 202 Accepted — state PENDING
+        Note right of CB: queued in the bridge's<br/>persistent session
+        EA->>EB: telemetry seq=42..52
+        Note left of EB: spooled to disk<br/>on the SITE broker
+    end
+
+    Note over CB,EB: bridge reconnects (5–30 s backoff)
+    CB->>EB: queued PICK_ITEM delivered
+    EB->>EA: PICK_ITEM
+    EA->>EA: expiresAt still valid → pick it
+    EA->>EB: result ACCEPTED grasped=true
+    EB->>CB: forwarded
+    EB->>CB: telemetry 42..52 drained in order
+    Note over CA: missed=0 · latency 73.8 s
+```
+
+Two different queues do the work, which is why the failure modes differ:
+**telemetry** waits on the *site* broker's disk, **commands** wait in the *cloud*
+broker's session for that site's bridge.
+
 Measured on this stack, across a ~74-second outage:
 
 ```
@@ -164,17 +231,29 @@ every other site. Rooting the tree there means:
 - a new message kind (`alarm`, `config`) slots in under a site without changing the
   shape of anything above it.
 
+```mermaid
+flowchart TD
+    R["sites/"] --> S1["site1/"]
+    R --> S2["site2/"]
+
+    S1 --> T1["telemetry/"]
+    S1 --> H1["health/"]
+    S1 --> C1["command/"]
+    S1 --> B1["bridge/"]
+
+    T1 --> T1a["arm-01 · arm-02 · humanoid-03<br/><small>QoS 1 · not retained</small>"]
+    H1 --> H1a["arm-01 · arm-02 · humanoid-03 · gateway<br/><small>QoS 1 · retained · + Last Will</small>"]
+    C1 --> C1a["arm-01/req · arm-01/res · …<br/><small>QoS 1 · 15-min expiry</small>"]
+    B1 --> B1a["state<br/><small>retained · mosquitto notification</small>"]
+
+    S2 --> D["telemetry/ · health/ · command/ · bridge/<br/><small>arm-11 · humanoid-12</small>"]
+
+    classDef site fill:#e8f0fe,stroke:#4285f4,color:#111
+    classDef leaf fill:#f8fafc,stroke:#94a3b8,color:#111
+    class S1,S2 site
+    class T1a,H1a,C1a,B1a,D leaf
 ```
-sites
-├── site1
-│   ├── telemetry  ├── arm-01  arm-02  humanoid-03
-│   ├── health     ├── arm-01  arm-02  humanoid-03  gateway
-│   ├── command    └── arm-01/req  arm-01/res  …
-│   └── bridge     └── state
-└── site2
-    ├── telemetry  ├── arm-11  humanoid-12
-    └── …
-```
+
 
 The cost lands on fleet-wide reads: `sites/+/telemetry/+` rather than
 `telemetry/+/+`. That is the right trade — four subscriptions in one service,
@@ -451,7 +530,7 @@ mqtt/
 │   ├── cloud/config/                 cloud broker conf + ACL
 │   └── edge-site{1,2}/config/        site broker conf template (bridge) + ACL
 ├── apps/
-│   ├── mqtt-spring-boot-starter/     reusable MQTT plumbing (see its README)
+│   ├── mqtt-spring-boot/             reusable MQTT plumbing (autoconfigure + starter)
 │   ├── cloud-service/                Maven project + Dockerfile
 │   └── edge-service/                 Maven project + Dockerfile
 └── scripts/
@@ -462,15 +541,18 @@ mqtt/
 
 Each service is organised by domain rather than by layer:
 
-```
-com.jinternals.mqtt.edge          com.jinternals.mqtt.cloud
-├── command/                ├── api/
-├── config/                 ├── command/
-├── device/                 ├── config/
-├── health/                 ├── fleet/
-├── telemetry/              ├── listener/
-└── protocol/               └── protocol/
-```
+| `…mqtt.edge` (gateway) | `…mqtt.cloud` (fleet) | `…mqtt.spring` (starter) |
+|---|---|---|
+| `robot/` — cell state, registry | `fleet/` — last-known state | `core/` — connection, gateway |
+| `telemetry/` — sampling | `command/` — dispatch, results | `listener/` — `@MqttListener` scan |
+| `health/` — heartbeat, LWT | `listener/` — subscriptions | `annotation/` — `@MqttListener` |
+| `command/` — execution | `api/` — REST | `autoconfigure/` — wiring |
+| `config/` — properties, will | `config/` — properties | `health/` — actuator indicator |
+| `protocol/` — topics + payloads | `protocol/` — topics + payloads | `support/` — JSON codec |
+
+Dependencies in the starter point one way — `autoconfigure` → everything,
+`listener` → `core`+`support`+`annotation`, `core` → `support` — so nothing depends
+on `autoconfigure` and the library can be wired by hand without Boot.
 
 ### What is shared, and what deliberately is not
 
@@ -493,7 +575,7 @@ the fleet-wide wildcards.
 
 ### The starter
 
-[`apps/mqtt-spring-boot-starter`](apps/mqtt-spring-boot-starter/README.md) — annotate
+[`apps/mqtt-spring-boot`](apps/mqtt-spring-boot/README.md) — annotate
 to receive, inject a gateway to send:
 
 ```java
@@ -536,9 +618,9 @@ mosquitto_sub -h localhost -p 8883 --cafile certs/ca.crt \
 ## Tests
 
 ```bash
-(cd apps/mqtt-spring-boot-starter && mvn test)   # 26 — auto-config, listener discovery, wildcards
-(cd apps/cloud-service            && mvn test)   #  7 — replay, gaps, staleness, LWT
-(cd apps/edge-service             && mvn test)   #  8 — expiry boundaries, topic scheme
+(cd apps/mqtt-spring-boot && mvn test)   # 26 — auto-config, listener discovery, wildcards
+(cd apps/cloud-service    && mvn test)   #  7 — replay, gaps, staleness, LWT
+(cd apps/edge-service     && mvn test)   #  8 — expiry boundaries, topic scheme
 ```
 
 The starter must be installed first (`mvn install`) for the services to resolve it;
