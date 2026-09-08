@@ -494,12 +494,10 @@ the cloud catches up in one burst. That divergence *is* the bridge doing its job
 ### Who may touch what, on the cloud broker
 
 Every rule is a prefix, which is only possible because the site is the first
-variable segment of every topic. The red arrows are the denials the scheme exists
-for — and they are denials by *absence*: there is simply no rule granting one site
-anything under another.
+variable segment of every topic.
 
 ```mermaid
-flowchart LR
+flowchart TD
     B1(["bridge-site1"])
     B2(["bridge-site2"])
 
@@ -514,12 +512,11 @@ flowchart LR
     end
 
     B1 -- write --> S1U
-    B1 -- "read only" --> S1C
+    B1 -- read --> S1C
     B2 -- write --> S2U
-    B2 -- "read only" --> S2C
-
-    B1 -. "no grant, any verb" .-> T2
-    B2 -. "no grant, any verb" .-> T1
+    B2 -- read --> S2C
+    B1 -.-> T2
+    B2 -.-> T1
 
     classDef cred fill:#dbeafe,stroke:#2563eb,color:#0f172a
     classDef topic fill:#ffffff,stroke:#94a3b8,color:#0f172a
@@ -530,6 +527,9 @@ flowchart LR
     linkStyle 4,5 stroke:#dc2626,stroke-width:2px,stroke-dasharray:6 4
 ```
 
+Black arrows are grants; **red dashed arrows are denials** — no rule anywhere lets
+one site's credential touch the other's subtree, with any verb.
+
 | Credential | Reads | Writes |
 |---|---|---|
 | `bridge-site1` | `sites/site1/command/+/req` | `sites/site1/{telemetry,health,command/+/res,bridge/state}` |
@@ -539,9 +539,10 @@ flowchart LR
 
 Two denials carry the design:
 
-- **A site cannot impersonate another.** `bridge-site1` has no grant anywhere under
-  `sites/site2/`, so a compromised site-1 gateway cannot publish telemetry as site 2
-  or read its commands.
+- **A site cannot impersonate another.** The denial is by *absence*: there is no
+  "deny" rule, simply no grant for `bridge-site1` anywhere under `sites/site2/`. A
+  compromised site-1 gateway cannot publish telemetry as site 2 or read its
+  commands.
 - **A site cannot write its own commands.** The bridge may *read*
   `sites/site1/command/+/req` but never write it. This is why the bridge credential
   cannot collapse to a single `sites/site1/#` grant, tempting as that looks: write on
