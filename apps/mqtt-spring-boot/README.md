@@ -125,7 +125,32 @@ void onTelemetry(Telemetry t, MqttAcknowledgement ack) {
 }
 ```
 
-Three consequences worth knowing before choosing:
+### The two settings must agree, and the starter checks at startup
+
+`mqtt.manual-acks` and your listener signature are two halves of one decision. Get
+them out of step and the runtime symptom is silent, so both mismatches are refused
+when the context starts:
+
+| `manual-acks` | ack parameter | outcome |
+|---|---|---|
+| `false` | absent | **The default.** Connection acks once the listener returns |
+| `true` | present | Manual mode. The listener decides |
+| `true` | *absent* | **Startup failure** — nothing would ever ack, and delivery would stop once the inflight window filled |
+| `false` | *present* | **Startup failure** — the connection already acks on return, so acking early then throwing would lose the message while the log claimed it was withheld |
+
+```
+@MqttListener fleetListener#onCommandResponse takes no MqttAcknowledgement
+parameter, but mqtt.manual-acks is true. Nothing would ever acknowledge these
+messages and delivery would stall once the inflight window filled. Add an
+MqttAcknowledgement parameter, or set mqtt.manual-acks=false to let the
+connection acknowledge on return.
+```
+
+Both are the kind of bug that passes every test against a broker that never
+redelivers, then goes quiet in production — so they are startup failures rather
+than warnings.
+
+### Three consequences worth knowing before choosing
 
 - A withheld acknowledgement is redelivered on **session resume**, not immediately.
   A failed message can wait until the connection next cycles.
@@ -240,7 +265,7 @@ it on the classpath the health auto-configuration simply does not load.
 
 ## Tests
 
-31 tests, all using `ApplicationContextRunner` — no broker is contacted.
+34 tests, all using `ApplicationContextRunner` — no broker is contacted.
 
 ```bash
 mvn test

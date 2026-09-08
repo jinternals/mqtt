@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
+import com.jinternals.mqtt.spring.core.MqttClientProperties;
 import com.jinternals.mqtt.spring.core.MqttPayloadConversionException;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
 import com.jinternals.mqtt.spring.support.MqttCodec;
@@ -27,14 +28,17 @@ class MqttListenerAnnotationBeanPostProcessorTest {
         return new ApplicationContextRunner().withUserConfiguration(Infrastructure.class);
     }
 
-    /** The three beans the starter's auto-configuration would normally provide. */
+    /** What the starter's auto-configuration would normally provide. */
     @Configuration(proxyBeanMethods = false)
+    @org.springframework.boot.context.properties.EnableConfigurationProperties(MqttClientProperties.class)
     static class Infrastructure {
 
         @Bean
         MqttCodec mqttCodec() {
             return new MqttCodec(new ObjectMapper());
         }
+
+
 
         @Bean
         static MqttListenerRegistry mqttListenerRegistry() {
@@ -187,7 +191,7 @@ class MqttListenerAnnotationBeanPostProcessorTest {
     @Test
     @DisplayName("an MqttAcknowledgement parameter is injected, and resolved by type not position")
     void injectsAcknowledgement() {
-        runner().withUserConfiguration(AckListener.class)
+        runner().withPropertyValues("mqtt.manual-acks=true").withUserConfiguration(AckListener.class)
                 .run(context -> {
                     AckListener bean = context.getBean(AckListener.class);
                     java.util.concurrent.atomic.AtomicInteger acks = new java.util.concurrent.atomic.AtomicInteger();
@@ -228,4 +232,43 @@ class MqttListenerAnnotationBeanPostProcessorTest {
         @MqttListener(topic = "bad/+")
         void wrongType(Command command, Integer nonsense) {}
     }
+
+    // --- the two ways config and signature can disagree -------------------------------------
+
+    @Test
+    @DisplayName("manual-acks=true with no ack parameter fails at startup, not silently at runtime")
+    void manualAcksWithoutHandleIsRejected() {
+        runner().withPropertyValues("mqtt.manual-acks=true", "app.site-id=site7")
+                .withUserConfiguration(TypedListener.class)
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .rootCause()
+                        .hasMessageContaining("manual-acks is true")
+                        .hasMessageContaining("delivery would stall"));
+    }
+
+    @Test
+    @DisplayName("manual-acks=false with an ack parameter fails at startup — acking early then throwing loses it")
+    void autoAcksWithHandleIsRejected() {
+        runner().withUserConfiguration(AckListener.class)
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .rootCause()
+                        .hasMessageContaining("manual-acks is false")
+                        .hasMessageContaining("Remove the parameter"));
+    }
+
+    @Test
+    @DisplayName("the common case — manual-acks=false and no ack parameter — is accepted")
+    void autoAcksWithoutHandleIsTheDefault() {
+        runner().withPropertyValues("app.site-id=site7")
+                .withUserConfiguration(TypedListener.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(MqttListenerRegistry.class).size()).isEqualTo(1);
+                });
+    }
+
 }

@@ -3,6 +3,7 @@ package com.jinternals.mqtt.spring.listener;
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttConnection;
 import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
+import com.jinternals.mqtt.spring.core.MqttClientProperties;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
 import com.jinternals.mqtt.spring.support.MqttCodec;
 
@@ -79,6 +80,7 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
 
     private void register(Object bean, String beanName, Method method, MqttListener listener) {
         validate(method);
+        validateAckMode(beanName, method);
 
         String topic = environment().resolveRequiredPlaceholders(listener.topic());
         Method invocable = AopUtils.selectInvocableMethod(method, bean.getClass());
@@ -181,6 +183,62 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
                                 + "; after the payload only String (topic) and MqttAcknowledgement"
                                 + " are resolved");
             }
+        }
+    }
+
+    /**
+     * Catches the two ways {@code mqtt.manual-acks} and a listener signature can disagree.
+     *
+     * <p>Both are startup failures rather than warnings, because both fail silently at runtime and
+     * neither shows up in testing against a broker that never redelivers:
+     *
+     * <ul>
+     *   <li><b>manual-acks on, no handle</b> — nothing ever acknowledges. The inflight window fills
+     *       and delivery stops. No exception, no error log, just a feed that goes quiet.
+     *   <li><b>manual-acks off, handle present</b> — the connection already acknowledges on return,
+     *       so the parameter is not just redundant, it is a trap: acknowledge early, throw later,
+     *       and the message is gone while the log claims it was withheld for redelivery.
+     * </ul>
+     */
+    private void validateAckMode(String beanName, Method method) {
+        MqttClientProperties properties =
+                beanFactory.getBeanProvider(MqttClientProperties.class).getIfAvailable();
+        if (properties == null) {
+            // Wired by hand without the auto-configuration; the mode is not ours to infer.
+            return;
+        }
+        boolean declaresAck = false;
+        for (Class<?> type : method.getParameterTypes()) {
+            declaresAck |= type == MqttAcknowledgement.class;
+        }
+
+        if (properties.isManualAcks() && !declaresAck) {
+            throw new IllegalStateException(
+                    "@MqttListener "
+                            + beanName
+                            + "#"
+                            + method.getName()
+                            + " takes no MqttAcknowledgement parameter, but "
+                            + MqttClientProperties.PREFIX
+                            + ".manual-acks is true. Nothing would ever acknowledge these messages"
+                            + " and delivery would stall once the inflight window filled. Add an"
+                            + " MqttAcknowledgement parameter, or set "
+                            + MqttClientProperties.PREFIX
+                            + ".manual-acks=false to let the connection acknowledge on return.");
+        }
+        if (!properties.isManualAcks() && declaresAck) {
+            throw new IllegalStateException(
+                    "@MqttListener "
+                            + beanName
+                            + "#"
+                            + method.getName()
+                            + " takes an MqttAcknowledgement parameter, but "
+                            + MqttClientProperties.PREFIX
+                            + ".manual-acks is false, so the connection already acknowledges once"
+                            + " this method returns. Acknowledging early and then throwing would"
+                            + " lose the message. Remove the parameter, or set "
+                            + MqttClientProperties.PREFIX
+                            + ".manual-acks=true to take ownership.");
         }
     }
 
