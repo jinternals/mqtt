@@ -497,38 +497,98 @@ Every rule is a prefix, which is only possible because the site is the first
 variable segment of every topic.
 
 ```mermaid
-flowchart TD
-    B1(["bridge-site1"])
-    B2(["bridge-site2"])
-
-    subgraph T1["sites/site1/**"]
-        S1U["telemetry · health<br/>command/+/res"]
-        S1C["command/+/req"]
+flowchart TB
+    subgraph CLIENTS["who connects to the cloud broker &nbsp;·&nbsp; mqtts 8883 &nbsp;·&nbsp; allow_anonymous false"]
+        direction LR
+        EB1(["<b>edge-broker-site1</b><br/><small>site 1 gateway, dials out</small><br/><small>user: bridge-site1</small>"])
+        EB2(["<b>edge-broker-site2</b><br/><small>site 2 gateway, dials out</small><br/><small>user: bridge-site2</small>"])
+        CA(["<b>cloud-app</b><br/><small>fleet service</small><br/><small>user: cloud-app</small>"])
+        OB(["<b>observer</b><br/><small>topic browser</small><br/><small>read-only</small>"])
     end
 
-    subgraph T2["sites/site2/**"]
-        S2U["telemetry · health<br/>command/+/res"]
-        S2C["command/+/req"]
+    subgraph NS["cloud-broker topic namespace"]
+        direction LR
+        subgraph T1["sites/site1/**"]
+            S1U["telemetry · health<br/>command/+/res"]
+            S1C["command/+/req"]
+        end
+        subgraph T2["sites/site2/**"]
+            S2U["telemetry · health<br/>command/+/res"]
+            S2C["command/+/req"]
+        end
+        DLQ["dlq/cloud-service"]
     end
 
-    B1 -- write --> S1U
-    B1 -- read --> S1C
-    B2 -- write --> S2U
-    B2 -- read --> S2C
-    B1 -.-> T2
-    B2 -.-> T1
+    EB1 -- write --> S1U
+    EB1 -- read --> S1C
+    EB2 -- write --> S2U
+    EB2 -- read --> S2C
+
+    CA -- read --> S1U
+    CA -- write --> S1C
+    CA -- read --> S2U
+    CA -- write --> S2C
+    CA -- write --> DLQ
+
+    OB -- "read-only" --> NS
+
 
     classDef cred fill:#dbeafe,stroke:#2563eb,color:#0f172a
     classDef topic fill:#ffffff,stroke:#94a3b8,color:#0f172a
-    class B1,B2 cred
+    class EB1,EB2,CA,OB cred
+    class S1U,S1C,S2U,S2C,DLQ topic
+    style T1 fill:#dcfce7,stroke:#16a34a
+    style T2 fill:#fae8ff,stroke:#a21caf
+    style NS fill:#eef2ff,stroke:#a5b4fc
+    style CLIENTS fill:#f8fafc,stroke:#cbd5e1
+```
+
+Sites **dial out**: a gateway broker opens the connection to the cloud broker and
+authenticates as `bridge-siteN`. The cloud never initiates — sites are behind NAT
+with no stable address — so every arrow above is access granted over a connection
+the site itself established.
+
+Read it as *credential → topic it may touch*, not as data flow. `cloud-app` writes
+`command/+/req` and reads everything else; the bridges are the mirror image.
+
+### What each site cannot touch
+
+```mermaid
+flowchart TD
+    EB1(["edge-broker-site1<br/><small>site 1 gateway · dials out</small><br/><small>authenticates as <b>bridge-site1</b></small>"])
+    EB2(["edge-broker-site2<br/><small>site 2 gateway · dials out</small><br/><small>authenticates as <b>bridge-site2</b></small>"])
+
+    subgraph CB["cloud-broker &nbsp;·&nbsp; mqtts 8883 &nbsp;·&nbsp; ACL enforced per credential"]
+        direction LR
+        subgraph T1["sites/site1/**"]
+            S1U["telemetry · health<br/>command/+/res"]
+            S1C["command/+/req"]
+        end
+        subgraph T2["sites/site2/**"]
+            S2U["telemetry · health<br/>command/+/res"]
+            S2C["command/+/req"]
+        end
+    end
+
+    EB1 -- write --> S1U
+    EB1 -- read --> S1C
+    EB2 -- write --> S2U
+    EB2 -- read --> S2C
+    EB1 -.-> T2
+    EB2 -.-> T1
+
+    classDef cred fill:#dbeafe,stroke:#2563eb,color:#0f172a
+    classDef topic fill:#ffffff,stroke:#94a3b8,color:#0f172a
+    class EB1,EB2 cred
     class S1U,S1C,S2U,S2C topic
     style T1 fill:#dcfce7,stroke:#16a34a
     style T2 fill:#fae8ff,stroke:#a21caf
+    style CB fill:#eef2ff,stroke:#a5b4fc
     linkStyle 4,5 stroke:#dc2626,stroke-width:2px,stroke-dasharray:6 4
 ```
 
-Black arrows are grants; **red dashed arrows are denials** — no rule anywhere lets
-one site's credential touch the other's subtree, with any verb.
+Red dashed arrows are **denials by absence** — there is no "deny" rule, simply no
+grant for one site anywhere under another's subtree.
 
 | Credential | Reads | Writes |
 |---|---|---|
