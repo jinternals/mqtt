@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
+import com.jinternals.mqtt.spring.core.MqttAckMode;
 import com.jinternals.mqtt.spring.core.MqttClientProperties;
 import com.jinternals.mqtt.spring.core.MqttPayloadConversionException;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
@@ -271,4 +272,74 @@ class MqttListenerAnnotationBeanPostProcessorTest {
                 });
     }
 
+    // --- per-listener ack mode ---------------------------------------------------------------
+
+    @Test
+    @DisplayName("ackMode on the annotation overrides the connection-wide default, both ways")
+    void perListenerModeOverridesDefault() {
+        runner().withPropertyValues("mqtt.manual-acks=true")
+                .withUserConfiguration(MixedModes.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var subs = context.getBean(MqttListenerRegistry.class).all();
+                    assertThat(subs).hasSize(2);
+                    // Connection default is MANUAL; the AUTO listener opts out of it.
+                    assertThat(subs.stream().filter(x -> x.isManual(true)).count()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    @DisplayName("an AUTO and a MANUAL listener on overlapping filters is refused at startup")
+    void crossModeOverlapIsRejected() {
+        runner().withUserConfiguration(OverlappingModes.class)
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .rootCause()
+                        .hasMessageContaining("overlaps")
+                        .hasMessageContaining("acknowledgement applies to"));
+    }
+
+    @Test
+    @DisplayName("different modes on non-overlapping filters are fine — that is the point")
+    void disjointFiltersMayDiffer() {
+        runner().withUserConfiguration(DisjointModes.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(MqttListenerRegistry.class).size()).isEqualTo(2);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class MixedModes {
+        @MqttListener(topic = "manual/+", ackMode = MqttAckMode.MANUAL)
+        void manual(Command c, MqttAcknowledgement ack) {
+            ack.acknowledge();
+        }
+
+        @MqttListener(topic = "auto/+", ackMode = MqttAckMode.AUTO)
+        void auto(Command c) {}
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class OverlappingModes {
+        @MqttListener(topic = "sites/+/telemetry/+", ackMode = MqttAckMode.AUTO)
+        void ingest(Command c) {}
+
+        @MqttListener(topic = "sites/site1/#", ackMode = MqttAckMode.MANUAL)
+        void audit(Command c, MqttAcknowledgement ack) {
+            ack.acknowledge();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class DisjointModes {
+        @MqttListener(topic = "sites/+/telemetry/+", ackMode = MqttAckMode.AUTO)
+        void ingest(Command c) {}
+
+        @MqttListener(topic = "sites/+/health/+", ackMode = MqttAckMode.MANUAL)
+        void persist(Command c, MqttAcknowledgement ack) {
+            ack.acknowledge();
+        }
+    }
 }

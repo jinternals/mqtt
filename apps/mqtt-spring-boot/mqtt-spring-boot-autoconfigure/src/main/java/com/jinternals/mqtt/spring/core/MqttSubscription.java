@@ -10,9 +10,11 @@ import java.util.function.BiConsumer;
  * @param topicFilter MQTT filter, may contain {@code +} and {@code #}
  * @param qos         subscription QoS — the delivery guarantee is the lower of publish and
  *                    subscribe QoS, so subscribing at 0 quietly downgrades everything
+ * @param ackMode     who acknowledges; {@link MqttAckMode#INHERIT} defers to {@code mqtt.manual-acks}
  * @param handler     runs on the connection's dispatch thread
  */
-public record MqttSubscription(String topicFilter, int qos, MqttMessageHandler handler) {
+public record MqttSubscription(
+        String topicFilter, int qos, MqttAckMode ackMode, MqttMessageHandler handler) {
 
     /**
      * A subscription whose handler does not care about acknowledgement — the common case, where
@@ -20,10 +22,23 @@ public record MqttSubscription(String topicFilter, int qos, MqttMessageHandler h
      * handler returns without throwing.
      */
     public static MqttSubscription atLeastOnce(String topicFilter, BiConsumer<String, byte[]> handler) {
-        return new MqttSubscription(topicFilter, 1, (topic, payload, ack) -> handler.accept(topic, payload));
+        return new MqttSubscription(
+                topicFilter, 1, MqttAckMode.INHERIT, (topic, payload, ack) -> handler.accept(topic, payload));
     }
 
     public static MqttSubscription atLeastOnce(String topicFilter, MqttMessageHandler handler) {
-        return new MqttSubscription(topicFilter, 1, handler);
+        return new MqttSubscription(topicFilter, 1, MqttAckMode.INHERIT, handler);
+    }
+
+    /**
+     * Whether this subscription expects the listener to acknowledge, given the connection-wide
+     * default that {@link MqttAckMode#INHERIT} defers to.
+     */
+    public boolean isManual(boolean connectionDefaultIsManual) {
+        return switch (ackMode) {
+            case MANUAL -> true;
+            case AUTO -> false;
+            case INHERIT -> connectionDefaultIsManual;
+        };
     }
 }

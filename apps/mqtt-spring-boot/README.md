@@ -125,7 +125,46 @@ void onTelemetry(Telemetry t, MqttAcknowledgement ack) {
 }
 ```
 
-### The two settings must agree, and the starter checks at startup
+### Per-listener override
+
+`mqtt.manual-acks` is the service-wide default; a single listener can opt out:
+
+```java
+@MqttListener(topic = "sites/+/telemetry/+", ackMode = AUTO)
+void ingest(Telemetry t) { registry.record(t); }          // cheap, in-memory
+
+@MqttListener(topic = "sites/+/health/+", ackMode = MANUAL)
+void persist(RobotHealth h, MqttAcknowledgement ack) {
+    repository.save(h);
+    ack.acknowledge();                                     // only once durable
+}
+```
+
+`INHERIT` (the default) takes the property, so a service with one policy sets one
+property and never touches the annotation.
+
+**There is one constraint, and it comes from MQTT rather than from this starter.**
+`@KafkaListener` can vary ack mode freely because each listener gets its own
+consumer. Here every listener shares one connection, and an acknowledgement applies
+to the **message**, not to a subscription. If a wildcard let one message reach both
+an `AUTO` and a `MANUAL` listener, the automatic acknowledgement would fire first
+and silently cancel the manual one's control.
+
+So listeners whose effective modes differ may not have **overlapping topic
+filters**, and that is checked at startup by structural filter comparison, not left
+to surface as lost messages:
+
+```
+@MqttListener auditListener#audit on 'sites/site1/#' is MANUAL, but it overlaps
+'sites/+/telemetry/+' which is AUTO. One message can match both, and an
+acknowledgement applies to the message rather than the subscription, so the
+automatic one would cancel the manual one's control. Give them the same ackMode,
+or topic filters that cannot both match.
+```
+
+Different modes on filters that *cannot* both match are fine — that is the point.
+
+### Mode and signature must agree, and the starter checks at startup
 
 `mqtt.manual-acks` and your listener signature are two halves of one decision. Get
 them out of step and the runtime symptom is silent, so both mismatches are refused
@@ -265,7 +304,7 @@ it on the classpath the health auto-configuration simply does not load.
 
 ## Tests
 
-34 tests, all using `ApplicationContextRunner` — no broker is contacted.
+50 tests, all using `ApplicationContextRunner` — no broker is contacted.
 
 ```bash
 mvn test

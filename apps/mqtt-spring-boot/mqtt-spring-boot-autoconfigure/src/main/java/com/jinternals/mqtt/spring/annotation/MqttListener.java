@@ -2,6 +2,7 @@ package com.jinternals.mqtt.spring.annotation;
 
 import com.jinternals.mqtt.spring.support.MqttCodec;
 
+import com.jinternals.mqtt.spring.core.MqttAckMode;
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -54,4 +55,21 @@ public @interface MqttListener {
      * this at 0 quietly downgrades an at-least-once publisher.
      */
     int qos() default 1;
+
+    /**
+     * Who acknowledges messages for this listener.
+     *
+     * <p>Defaults to {@link MqttAckMode#INHERIT}, i.e. whatever {@code mqtt.manual-acks} says, so a
+     * service that wants one policy sets one property and never touches this.
+     *
+     * <p>Override it when one listener genuinely differs — cheap in-memory ingest alongside a
+     * listener that must not acknowledge until a row is committed. There is one constraint, and it
+     * comes from MQTT rather than from this starter: every listener shares one connection, and an
+     * acknowledgement applies to the <em>message</em>, not to a subscription. If a wildcard let one
+     * message reach both an AUTO and a MANUAL listener, the automatic acknowledgement would fire
+     * first and quietly cancel the manual one's control. So listeners whose effective modes differ
+     * may not have overlapping topic filters, and that is refused at startup rather than left to
+     * surface as lost messages.
+     */
+    MqttAckMode ackMode() default MqttAckMode.INHERIT;
 }

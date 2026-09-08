@@ -632,7 +632,7 @@ mosquitto_sub -h localhost -p 8883 --cafile certs/ca.crt \
 ## Tests
 
 ```bash
-(cd apps/mqtt-spring-boot && mvn test)   # 34 — auto-config, listeners, acks, dead-letter, wildcards
+(cd apps/mqtt-spring-boot && mvn test)   # 50 — auto-config, listeners, acks, dead-letter, filters
 (cd apps/cloud-service    && mvn test)   #  7 — replay, gaps, staleness, LWT
 (cd apps/edge-service     && mvn test)   #  8 — expiry boundaries, topic scheme
 ```

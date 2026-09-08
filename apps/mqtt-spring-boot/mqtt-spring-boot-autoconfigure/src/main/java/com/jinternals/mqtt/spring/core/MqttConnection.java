@@ -392,13 +392,17 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
         dispatcher.execute(
                 () -> {
                     boolean safeToAcknowledge = true;
+                    boolean listenerOwnsAck = false;
                     for (MqttSubscription sub : subscriptions) {
                         if (matches(sub.topicFilter(), topic)) {
+                            listenerOwnsAck |= sub.isManual(props.isManualAcks());
                             safeToAcknowledge &= deliver(sub, topic, payload, ack);
                         }
                     }
 
-                    if (props.isManualAcks()) {
+                    if (listenerOwnsAck) {
+                        // A manual listener matched. Startup validation guarantees no AUTO listener
+                        // overlaps it, so there is no one here to acknowledge on its behalf.
                         return;
                     }
                     if (safeToAcknowledge) {
@@ -577,22 +581,9 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
         return props.getUrl();
     }
 
-    /** MQTT topic-filter matching: {@code +} spans one level, {@code #} spans the rest. */
+    /** MQTT topic-filter matching. See {@link MqttTopicFilter}. */
     static boolean matches(String filter, String topic) {
-        String[] f = filter.split("/", -1);
-        String[] t = topic.split("/", -1);
-        for (int i = 0; i < f.length; i++) {
-            if (f[i].equals("#")) {
-                return true;
-            }
-            if (i >= t.length) {
-                return false;
-            }
-            if (!f[i].equals("+") && !f[i].equals(t[i])) {
-                return false;
-            }
-        }
-        return f.length == t.length;
+        return MqttTopicFilter.matches(filter, topic);
     }
 
 }

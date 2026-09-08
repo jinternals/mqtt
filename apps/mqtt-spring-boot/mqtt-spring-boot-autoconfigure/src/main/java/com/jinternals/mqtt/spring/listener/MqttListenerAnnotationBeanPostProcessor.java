@@ -3,7 +3,9 @@ package com.jinternals.mqtt.spring.listener;
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttConnection;
 import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
+import com.jinternals.mqtt.spring.core.MqttAckMode;
 import com.jinternals.mqtt.spring.core.MqttClientProperties;
+import com.jinternals.mqtt.spring.core.MqttTopicFilter;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
 import com.jinternals.mqtt.spring.support.MqttCodec;
 
@@ -80,9 +82,11 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
 
     private void register(Object bean, String beanName, Method method, MqttListener listener) {
         validate(method);
-        validateAckMode(beanName, method);
+        String describedAs = beanName + "#" + method.getName();
+        boolean manual = validateAckMode(describedAs, method, listener.ackMode());
 
         String topic = environment().resolveRequiredPlaceholders(listener.topic());
+        rejectCrossModeOverlap(describedAs, topic, manual);
         Method invocable = AopUtils.selectInvocableMethod(method, bean.getClass());
         ReflectionUtils.makeAccessible(invocable);
 
@@ -93,15 +97,16 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
                 new MqttSubscription(
                         topic,
                         listener.qos(),
+                        listener.ackMode(),
                         (receivedTopic, payload, ack) ->
                                 invoke(bean, invocable, parameterTypes, payloadType, receivedTopic, payload, ack)));
 
         log.info(
-                "Registered @MqttListener {}#{} on '{}' qos={}",
-                beanName,
-                method.getName(),
+                "Registered @MqttListener {} on '{}' qos={} ack={}",
+                describedAs,
                 topic,
-                listener.qos());
+                listener.qos(),
+                manual ? "manual" : "auto");
     }
 
     private void invoke(
@@ -200,46 +205,92 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
      *       and the message is gone while the log claims it was withheld for redelivery.
      * </ul>
      */
-    private void validateAckMode(String beanName, Method method) {
-        MqttClientProperties properties =
-                beanFactory.getBeanProvider(MqttClientProperties.class).getIfAvailable();
-        if (properties == null) {
-            // Wired by hand without the auto-configuration; the mode is not ours to infer.
-            return;
-        }
-        boolean declaresAck = false;
+    /**
+     * Checks that this listener's effective acknowledgement mode and its signature agree.
+     *
+     * <p>Both mismatches fail silently at runtime and neither shows up against a broker that never
+     * redelivers, so both are startup failures:
+     *
+     * <ul>
+     *   <li><b>manual, no handle</b> — nothing ever acknowledges. The inflight window fills and
+     *       delivery stops. No exception, no error log, just a feed that goes quiet.
+     *   <li><b>auto, handle present</b> — the connection already acknowledges on return, so the
+     *       parameter is a trap: acknowledge early, throw later, and the message is gone while the
+     *       log claims it was withheld for redelivery.
+     * </ul>
+     *
+     * @return whether this listener acknowledges for itself
+     */
+    private boolean validateAckMode(String describedAs, Method method, MqttAckMode declared) {
+        boolean manual = resolveManual(declared);
+        boolean declaresHandle = false;
         for (Class<?> type : method.getParameterTypes()) {
-            declaresAck |= type == MqttAcknowledgement.class;
+            declaresHandle |= type == MqttAcknowledgement.class;
         }
 
-        if (properties.isManualAcks() && !declaresAck) {
+        String origin = declared == MqttAckMode.INHERIT
+                ? MqttClientProperties.PREFIX + ".manual-acks is " + manual
+                : "@MqttListener(ackMode = " + declared + ")";
+
+        if (manual && !declaresHandle) {
             throw new IllegalStateException(
-                    "@MqttListener "
-                            + beanName
-                            + "#"
-                            + method.getName()
-                            + " takes no MqttAcknowledgement parameter, but "
-                            + MqttClientProperties.PREFIX
-                            + ".manual-acks is true. Nothing would ever acknowledge these messages"
-                            + " and delivery would stall once the inflight window filled. Add an"
-                            + " MqttAcknowledgement parameter, or set "
-                            + MqttClientProperties.PREFIX
-                            + ".manual-acks=false to let the connection acknowledge on return.");
+                    "@MqttListener " + describedAs + " takes no MqttAcknowledgement parameter, but "
+                            + origin + ". Nothing would ever acknowledge these messages and delivery"
+                            + " would stall once the inflight window filled. Add an"
+                            + " MqttAcknowledgement parameter, or set ackMode = AUTO.");
         }
-        if (!properties.isManualAcks() && declaresAck) {
+        if (!manual && declaresHandle) {
             throw new IllegalStateException(
-                    "@MqttListener "
-                            + beanName
-                            + "#"
-                            + method.getName()
-                            + " takes an MqttAcknowledgement parameter, but "
-                            + MqttClientProperties.PREFIX
-                            + ".manual-acks is false, so the connection already acknowledges once"
-                            + " this method returns. Acknowledging early and then throwing would"
-                            + " lose the message. Remove the parameter, or set "
-                            + MqttClientProperties.PREFIX
-                            + ".manual-acks=true to take ownership.");
+                    "@MqttListener " + describedAs + " takes an MqttAcknowledgement parameter, but "
+                            + origin + ", so the connection already acknowledges once this method"
+                            + " returns. Acknowledging early and then throwing would lose the"
+                            + " message. Remove the parameter, or set ackMode = MANUAL.");
         }
+        return manual;
+    }
+
+    /**
+     * Refuses two listeners that disagree about acknowledgement but could see the same message.
+     *
+     * <p>An acknowledgement applies to a message, not to a subscription, and every listener shares
+     * one connection. If a wildcard let one message reach both an automatic and a manual listener,
+     * the automatic acknowledgement would fire first and silently cancel the manual listener's
+     * control over its own delivery. Per-listener modes are therefore allowed exactly while they
+     * stay unambiguous.
+     */
+    private void rejectCrossModeOverlap(String describedAs, String topic, boolean manual) {
+        for (MqttSubscription existing : registry.all()) {
+            if (existing.isManual(connectionDefaultIsManual()) == manual) {
+                continue;
+            }
+            if (MqttTopicFilter.overlap(existing.topicFilter(), topic)) {
+                throw new IllegalStateException(
+                        "@MqttListener " + describedAs + " on '" + topic + "' is "
+                                + (manual ? "MANUAL" : "AUTO")
+                                + ", but it overlaps '" + existing.topicFilter() + "' which is "
+                                + (manual ? "AUTO" : "MANUAL")
+                                + ". One message can match both, and an acknowledgement applies to"
+                                + " the message rather than the subscription, so the automatic one"
+                                + " would cancel the manual one's control. Give them the same"
+                                + " ackMode, or topic filters that cannot both match.");
+            }
+        }
+    }
+
+    private boolean resolveManual(MqttAckMode declared) {
+        return switch (declared) {
+            case MANUAL -> true;
+            case AUTO -> false;
+            case INHERIT -> connectionDefaultIsManual();
+        };
+    }
+
+    private boolean connectionDefaultIsManual() {
+        MqttClientProperties properties =
+                beanFactory.getBeanProvider(MqttClientProperties.class).getIfAvailable();
+        // Wired by hand without the auto-configuration: the connection-wide default is not ours to
+        // infer, so INHERIT resolves to automatic, which is the safe reading.
+        return properties != null && properties.isManualAcks();
     }
 
     private Environment environment() {
