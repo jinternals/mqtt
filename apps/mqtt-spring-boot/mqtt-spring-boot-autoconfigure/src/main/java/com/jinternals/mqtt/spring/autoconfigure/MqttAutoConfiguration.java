@@ -81,6 +81,7 @@ public class MqttAutoConfiguration {
             ObjectProvider<MqttSubscription> subscriptions,
             MqttListenerRegistry listenerRegistry,
             ObjectProvider<MqttWill> will,
+            MqttCodec codec,
             ObjectProvider<MeterRegistry> meterRegistry) {
 
         if (!StringUtils.hasText(properties.getClientId())) {
@@ -98,6 +99,7 @@ public class MqttAutoConfiguration {
                 subs,
                 listenerRegistry,
                 will.getIfAvailable(),
+                codec,
                 meterRegistry.getIfAvailable(SimpleMeterRegistry::new));
     }
 

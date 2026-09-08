@@ -136,6 +136,77 @@ public class MqttClientProperties {
 
     private final Ssl ssl = new Ssl();
 
+    private final DeadLetter deadLetter = new DeadLetter();
+
+    /**
+     * Where messages go when they cannot be handled.
+     *
+     * <p>Off by default, and that default is deliberate: a starter should not begin publishing to a
+     * topic nobody asked for. With it off, a failing listener simply is not acknowledged and the
+     * broker redelivers on session resume — correct, but it means a message that can <em>never</em>
+     * succeed is retried forever and holds an inflight slot until delivery stalls.
+     *
+     * <p>Turning it on is how you bound that: after {@code maxAttempts}, the message is published to
+     * {@code topic} with its error and then acknowledged, so the queue drains and the failure
+     * becomes an object you can inspect and replay rather than a log line and a stall.
+     */
+    public static class DeadLetter {
+
+        private boolean enabled = false;
+
+        /** Required when enabled. A single topic — the original topic travels in the payload. */
+        private String topic;
+
+        /** QoS 1: a dead letter that is itself dropped defeats the purpose. */
+        private int qos = 1;
+
+        /**
+         * Handler attempts before dead-lettering. {@code 1} (default) means no retry.
+         *
+         * <p>Retries happen inline on the dispatch thread, so this stalls everything behind it for
+         * the duration. Keep it small; it is here for a transient blip, not for waiting out a
+         * dependency. An undecodable payload ignores this entirely — it cannot succeed on attempt
+         * two either.
+         */
+        private int maxAttempts = 1;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getTopic() {
+            return topic;
+        }
+
+        public void setTopic(String topic) {
+            this.topic = topic;
+        }
+
+        public int getQos() {
+            return qos;
+        }
+
+        public void setQos(int qos) {
+            this.qos = qos;
+        }
+
+        public int getMaxAttempts() {
+            return maxAttempts;
+        }
+
+        public void setMaxAttempts(int maxAttempts) {
+            this.maxAttempts = maxAttempts;
+        }
+    }
+
+    public DeadLetter getDeadLetter() {
+        return deadLetter;
+    }
+
     public static class Ssl {
         /** PKCS12 truststore holding the private CA. Empty disables TLS (plaintext, dev only). */
         private String trustStore;

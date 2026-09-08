@@ -30,12 +30,30 @@ public class MqttCodec {
      * Returns {@code null} on malformed input rather than throwing. A single bad payload — a
      * half-written retained message, an old schema replayed from a bridge backlog — must not take
      * out the dispatch loop for every other device.
+     *
+     * <p>Use {@link #decodeOrThrow} where the failure needs to be reported (dead-lettered) rather
+     * than merely skipped.
      */
     public <T> T decode(byte[] payload, Class<T> type) {
         try {
             return mapper.readValue(payload, type);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * Same, but reports why it failed.
+     *
+     * @throws com.jinternals.mqtt.spring.core.MqttPayloadConversionException with the parser's own
+     *     message as the cause, so a dead-letter entry says what was actually wrong with the bytes
+     *     instead of only that something was
+     */
+    public <T> T decodeOrThrow(byte[] payload, Class<T> type) {
+        try {
+            return mapper.readValue(payload, type);
+        } catch (Exception e) {
+            throw new com.jinternals.mqtt.spring.core.MqttPayloadConversionException(type, e);
         }
     }
 

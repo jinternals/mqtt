@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
+import com.jinternals.mqtt.spring.core.MqttPayloadConversionException;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
 import com.jinternals.mqtt.spring.support.MqttCodec;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -83,8 +84,8 @@ class MqttListenerAnnotationBeanPostProcessorTest {
     }
 
     @Test
-    @DisplayName("a malformed payload is dropped, not propagated — one bad message cannot stop a feed")
-    void malformedPayloadIsDropped() {
+    @DisplayName("a malformed payload raises MqttPayloadConversionException so it can be dead-lettered")
+    void malformedPayloadIsReported() {
         runner().withPropertyValues("app.site-id=site7")
                 .withUserConfiguration(TypedListener.class)
                 .run(context -> {
@@ -92,8 +93,14 @@ class MqttListenerAnnotationBeanPostProcessorTest {
                     MqttSubscription sub =
                             context.getBean(MqttListenerRegistry.class).all().get(0);
 
-                    sub.handler().handle("sites/site7/command/arm-01/req", "not json".getBytes(), NOOP_ACK);
+                    assertThatThrownBy(() ->
+                                    sub.handler()
+                                            .handle("sites/site7/command/arm-01/req",
+                                                    "not json".getBytes(), NOOP_ACK))
+                            .isInstanceOf(MqttPayloadConversionException.class)
+                            .hasMessageContaining("Command");
 
+                    // The listener was never called with a half-built object.
                     assertThat(bean.received).isEmpty();
                 });
     }
@@ -190,19 +197,6 @@ class MqttListenerAnnotationBeanPostProcessorTest {
                     // Both signatures got a working handle: (payload, ack) and (payload, topic, ack).
                     assertThat(acks.get()).isEqualTo(2);
                     assertThat(bean.topicSeen).isEqualTo("ack/x");
-                });
-    }
-
-    @Test
-    @DisplayName("an undecodable payload is acknowledged — it can never succeed, so holding it stalls delivery")
-    void undecodablePayloadIsAcknowledged() {
-        runner().withPropertyValues("app.site-id=site7")
-                .withUserConfiguration(TypedListener.class)
-                .run(context -> {
-                    java.util.concurrent.atomic.AtomicInteger acks = new java.util.concurrent.atomic.AtomicInteger();
-                    MqttSubscription sub = context.getBean(MqttListenerRegistry.class).all().get(0);
-                    sub.handler().handle("sites/site7/command/arm-01/req", "not json".getBytes(), acks::incrementAndGet);
-                    assertThat(acks.get()).isEqualTo(1);
                 });
     }
 

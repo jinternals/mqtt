@@ -15,6 +15,9 @@ topic read  sites/+/health/+
 topic read  sites/+/command/+/res
 topic write sites/+/command/+/req
 topic read  sites/+/bridge/state
+# Dead-letter topic. Write only -- the service produces failures, it does not
+# consume them; draining the DLQ is a separate, deliberate act by an operator.
+topic write dlq/cloud-service
 topic read  $SYS/#
 
 # --- site 1 gateway bridge --------------------------------------------------
@@ -43,4 +46,5 @@ topic write sites/site2/bridge/state
 # by accident, and so its access can be revoked without touching the service.
 user observer
 topic read sites/#
+topic read dlq/#
 topic read $SYS/#

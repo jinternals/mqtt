@@ -382,6 +382,13 @@ hands work to a dispatch thread, that would acknowledge before the listener ran,
 making QoS 1 at-least-once only as far as the library. A listener that throws is
 not acknowledged, so the broker keeps the message and redelivers it.
 
+That alone would trade one failure for another — a message that can *never* succeed
+would be redelivered forever, holding an inflight slot until delivery stalls. So the
+cloud service enables a **dead-letter topic** (`dlq/cloud-service`): after
+`max-attempts` a failure is published there with its original topic, the error and
+the payload, then acknowledged. The queue drains and the failure becomes an object
+you can inspect in the topic browser and replay.
+
 QoS 1 plus a bridge that replays on reconnect means a command **will** sometimes
 arrive twice. `CommandExecutor` keeps a bounded LRU of recent `commandId`s; a
 repeat is answered `DUPLICATE` and not re-executed.
@@ -625,7 +632,7 @@ mosquitto_sub -h localhost -p 8883 --cafile certs/ca.crt \
 ## Tests
 
 ```bash
-(cd apps/mqtt-spring-boot && mvn test)   # 29 — auto-config, listener discovery, acks, wildcards
+(cd apps/mqtt-spring-boot && mvn test)   # 31 — auto-config, listeners, acks, dead-letter, wildcards
 (cd apps/cloud-service    && mvn test)   #  7 — replay, gaps, staleness, LWT
 (cd apps/edge-service     && mvn test)   #  8 — expiry boundaries, topic scheme
 ```

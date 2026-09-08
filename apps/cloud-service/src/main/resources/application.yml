@@ -42,6 +42,13 @@ mqtt:
   # redelivers it on session resume -- which is what makes QoS 1 mean
   # at-least-once all the way into our code, not just as far as Paho.
   manual-acks: false
+  # A malformed or unhandleable message lands here instead of being retried
+  # forever and holding an inflight slot. The original topic, the error and the
+  # payload travel in the envelope, so it can be inspected and replayed.
+  dead-letter:
+    enabled: true
+    topic: dlq/cloud-service
+    max-attempts: 1
   keep-alive: 20s
   connection-timeout: 10s
   max-reconnect-delay: 30s

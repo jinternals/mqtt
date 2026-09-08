@@ -20,6 +20,11 @@
       "name": "mqtt.ssl.trust-store-password",
       "type": "java.lang.String",
       "description": "Password for the PKCS12 truststore."
+    },
+    {
+      "name": "mqtt.dead-letter.topic",
+      "type": "java.lang.String",
+      "description": "Topic that unhandleable messages are published to. Required when dead-lettering is enabled. A single topic: the original topic travels inside the envelope, so one ACL grant covers it."
     }
   ],
   "hints": [
@@ -77,6 +82,19 @@
         {
           "value": true,
           "description": "The listener owns acknowledgement via an MqttAcknowledgement parameter. Use when 'handled' means durable somewhere else."
+        }
+      ]
+    },
+    {
+      "name": "mqtt.dead-letter.max-attempts",
+      "values": [
+        {
+          "value": 1,
+          "description": "No retry (default). A failing handler dead-letters immediately."
+        },
+        {
+          "value": 3,
+          "description": "Retry twice inline before dead-lettering. Retries block the dispatch thread, so keep this small."
         }
       ]
     }

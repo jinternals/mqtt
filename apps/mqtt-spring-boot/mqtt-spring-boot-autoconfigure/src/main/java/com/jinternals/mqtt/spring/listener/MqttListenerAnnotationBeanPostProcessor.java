@@ -111,17 +111,10 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
             byte[] raw,
             MqttAcknowledgement ack) {
 
+        // Throws MqttPayloadConversionException, which the connection treats as unrecoverable:
+        // dead-lettered if a dead-letter topic is configured, otherwise logged and acknowledged.
+        // Either way it is never withheld for redelivery, because it cannot succeed on a retry.
         Object payload = convert(raw, payloadType);
-        if (payload == null) {
-            // convert() already logged. A single undecodable payload is dropped rather than thrown:
-            // otherwise one malformed retained message, or one old schema replayed out of a bridge
-            // backlog, would fail forever and stall the subscription behind it.
-            //
-            // It is acknowledged for the same reason. Refusing to acknowledge something that can
-            // never succeed just parks it in the inflight window until delivery stops.
-            ack.acknowledge();
-            return;
-        }
 
         // Arguments after the payload are resolved by TYPE, not position, so (payload, ack) and
         // (payload, topic, ack) are both unambiguous.
@@ -152,11 +145,7 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
         if (payloadType == String.class) {
             return new String(raw, StandardCharsets.UTF_8);
         }
-        Object decoded = codec().decode(raw, payloadType);
-        if (decoded == null) {
-            log.warn("Undecodable {} payload, dropping", payloadType.getSimpleName());
-        }
-        return decoded;
+        return codec().decodeOrThrow(raw, payloadType);
     }
 
     private void validate(Method method) {

@@ -131,15 +131,64 @@ Three consequences worth knowing before choosing:
   A failed message can wait until the connection next cycles.
 - Each unacknowledged message occupies a slot in the inflight window. Enough of them
   and delivery stalls — deliberate backpressure, but it is a stall.
-- So a message that can *never* succeed must not be withheld forever. An undecodable
-  payload is therefore logged, dropped **and acknowledged**: refusing to ack
-  something unparseable just parks it in the window until delivery stops. Route
-  genuine poison to a dead-letter topic from inside the listener rather than
-  throwing on every redelivery.
+- So a message that can *never* succeed must not be withheld forever — which is
+  what the dead-letter topic is for.
 
 Watch `mqtt.messages.unacknowledged` — non-zero means the broker is holding
 messages for redelivery, which is the difference between "a handler logged an
 error" and "delivery is backing up".
+
+## Dead-letter topic
+
+```yaml
+mqtt:
+  dead-letter:
+    enabled: true
+    topic: dlq/cloud-service
+    max-attempts: 1        # 1 = no retry
+```
+
+**Off by default**, deliberately: a starter should not start publishing to a topic
+nobody asked for. With it off, a failing listener is simply not acknowledged and
+the broker redelivers — correct, but a message that can never succeed is retried
+forever and holds an inflight slot until delivery stalls. Turning it on is how you
+bound that.
+
+What arrives on the topic:
+
+```json
+{
+  "originalTopic": "sites/site1/telemetry/ghost",
+  "subscription":  "sites/+/telemetry/+",
+  "clientId":      "cloud-service",
+  "failedAt":      "2026-09-08T03:26:09.651Z",
+  "attempts":      1,
+  "reason":        "PAYLOAD_UNDECODABLE",
+  "error":         "JsonEOFException: Unexpected end-of-input…",
+  "payload":       "{\"this\":\"is not a Telemetry\""
+}
+```
+
+Enough to diagnose and replay without going back to the logs. The payload is kept
+as **text** whenever the bytes are valid UTF-8, because the first thing anyone does
+with a dead-letter topic is point a topic browser at it; binary falls back to
+`payloadBase64`, and exactly one of the two is ever set.
+
+Four decisions worth knowing:
+
+- **Two failure kinds, treated oppositely.** A handler that throws might succeed on
+  redelivery, so it is retried `max-attempts` times first. A payload that will not
+  parse never will, so it is dead-lettered immediately — retrying it is pure waste.
+- **If the dead-letter publish itself fails**, the acknowledgement is withheld.
+  Acknowledging at that point would destroy the only remaining copy.
+- **Dead letters are not retained.** A retained one would be replayed to every
+  future subscriber of the topic, long after it was dealt with.
+- **Retries are inline** on the dispatch thread, so they stall everything behind
+  them. `max-attempts` is for a transient blip, not for waiting out a dependency.
+
+Grant the producing client write access to the topic and nothing else — draining a
+DLQ should be a deliberate act by an operator, not something the service does to
+itself on a loop.
 
 ## Sending
 
@@ -167,6 +216,10 @@ Never for telemetry or health, whose whole value is that they survive an outage.
 | `mqtt.session-expiry` | `4294967295s` | Protocol max, i.e. never. |
 | `mqtt.qos` | `1` | Default publish/subscribe QoS. |
 | `mqtt.manual-acks` | `false` | `false` acks after the listener returns cleanly; `true` hands it to the listener. |
+| `mqtt.dead-letter.enabled` | `false` | Publish unhandleable messages instead of retrying forever. |
+| `mqtt.dead-letter.topic` | — | Required when enabled. |
+| `mqtt.dead-letter.max-attempts` | `1` | Handler attempts before dead-lettering. Retries are inline. |
+| `mqtt.dead-letter.qos` | `1` | A dead letter that is itself dropped defeats the purpose. |
 | `mqtt.keep-alive` | `20s` | Short, to detect half-open sockets. |
 | `mqtt.connection-timeout` | `10s` | |
 | `mqtt.max-reconnect-delay` | `30s` | Backoff ceiling. |
@@ -177,7 +230,8 @@ Never for telemetry or health, whose whole value is that they survive an outage.
 ## Metrics and health
 
 `mqtt.messages.published`, `mqtt.messages.received`, `mqtt.messages.acknowledged`,
-`mqtt.messages.unacknowledged`, `mqtt.dispatch.errors`, `mqtt.connected`,
+`mqtt.messages.unacknowledged`, `mqtt.messages.dead_lettered`,
+`mqtt.dispatch.errors`, `mqtt.connected`,
 `mqtt.disconnects.total`.
 
 `/actuator/health` reports the broker connection, honouring
@@ -186,7 +240,7 @@ it on the classpath the health auto-configuration simply does not load.
 
 ## Tests
 
-29 tests, all using `ApplicationContextRunner` — no broker is contacted.
+31 tests, all using `ApplicationContextRunner` — no broker is contacted.
 
 ```bash
 mvn test

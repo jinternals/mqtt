@@ -65,6 +65,7 @@ Companion to [README.md](README.md), which explains the architecture.
 | `MqttCallback#connectComplete` | Re-subscribes on **every** connect. The broker normally restores subscriptions, but not if the session was lost — and a silently unsubscribed consumer is the worst failure mode here: everything looks healthy and nothing arrives. |
 | `MqttCallback#messageArrived` | Hands off to a single-threaded dispatcher (§7). |
 | `setManualAcks(true)` + `messageArrivedComplete()` | Ack control is taken from Paho in **both** modes. Paho auto-acks as soon as its callback returns, which — with async dispatch — would ack before the listener ran. Now the ack follows the listener, so a failed handler is redelivered rather than lost. |
+| **Dead-letter topic** | `mqtt.dead-letter.*`. Bounds the cost of the above: without it a message that can never succeed is redelivered forever and holds an inflight slot. A handler failure is retried `max-attempts` times then dead-lettered; an undecodable payload skips retries entirely. If the dead-letter publish itself fails the ack is withheld, because acking would destroy the last copy. |
 | `MqttMessage#setProperties` → `setMessageExpiryInterval` | Command expiry (§1). |
 
 ## 4. Delivery-semantics handling
@@ -104,7 +105,7 @@ Companion to [README.md](README.md), which explains the architecture.
 | **Graceful shutdown** | `server.shutdown: graceful` + `timeout-per-shutdown-phase: 20s`, so the clean DISCONNECT gets out. |
 | **Actuator** | `/actuator/health` (+ liveness/readiness probes), `/actuator/metrics`, `/actuator/prometheus`. |
 | **Custom `HealthIndicator`** | `MqttHealthIndicator` — reports broker connection, disconnect count, last-connected time. |
-| **Micrometer + Prometheus** | 15 custom meters: `mqtt.messages.{published,received,acknowledged,unacknowledged}`, `mqtt.connected`, `mqtt.disconnects.total`, `mqtt.dispatch.errors`, `cloud.commands.{issued,answered,pending}`, `cloud.telemetry.{late,out_of_order,sequence_gaps}`, `cloud.robots.tracked`, `edge.commands.{executed,duplicate,expired}`. |
+| **Micrometer + Prometheus** | 15 custom meters: `mqtt.messages.{published,received,acknowledged,unacknowledged,dead_lettered}`, `mqtt.connected`, `mqtt.disconnects.total`, `mqtt.dispatch.errors`, `cloud.commands.{issued,answered,pending}`, `cloud.telemetry.{late,out_of_order,sequence_gaps}`, `cloud.robots.tracked`, `edge.commands.{executed,duplicate,expired}`. |
 | `ObjectProvider` | Breaks a real bean cycle (connection ↔ handler) without a CGLIB proxy in every stack trace. |
 | **Spring MVC REST** | `FleetController`; `202 Accepted` for command submission, because reachability is not knowable at that point. |
 | **Jackson** | `JavaTimeModule` ISO-8601 instants, `non_null` inclusion. |
@@ -148,7 +149,7 @@ Companion to [README.md](README.md), which explains the architecture.
 | `scripts/chaos.sh` | WAN outage simulation via `docker network disconnect`. `down` / `up` / `flap` / `status`. |
 | `scripts/demo.sh` | Scripted end-to-end walkthrough of an outage. |
 | **MQTT Explorer** (`--profile ui`) | Live topic tree, preseeded with all three brokers on a read-only account. |
-| **Tests** | 44 tests (29 starter, 8 edge, 7 cloud): wildcard matching, expiry boundaries, topic scheme, replay/gap/staleness/LWT ingest rules. |
+| **Tests** | 46 tests (31 starter, 8 edge, 7 cloud): wildcard matching, expiry boundaries, topic scheme, replay/gap/staleness/LWT ingest rules. |
 
 ## 10. Deliberately *not* used
 

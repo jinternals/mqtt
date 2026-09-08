@@ -2,16 +2,21 @@ package com.jinternals.mqtt.spring.core;
 
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.listener.MqttListenerRegistry;
+import com.jinternals.mqtt.spring.support.MqttCodec;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.time.Instant;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -66,6 +71,7 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
     private final MqttClientProperties props;
     private final List<MqttSubscription> subscriptions = new CopyOnWriteArrayList<>();
     private final MqttListenerRegistry listenerRegistry;
+    private final MqttCodec codec;
     private final MqttWill will;
     private final MqttAsyncClient client;
     private final ScheduledExecutorService reconnectScheduler;
@@ -80,16 +86,19 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
     private final Counter dispatchErrors;
     private final Counter acknowledged;
     private final Counter unacknowledged;
+    private final Counter deadLettered;
 
     public MqttConnection(
             MqttClientProperties props,
             List<MqttSubscription> subscriptions,
             MqttListenerRegistry listenerRegistry,
             MqttWill will,
+            MqttCodec codec,
             MeterRegistry meters) {
         this.props = props;
         this.subscriptions.addAll(subscriptions);
         this.listenerRegistry = listenerRegistry;
+        this.codec = codec;
         this.will = will;
         try {
             this.client =
@@ -140,6 +149,7 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
         // Non-zero here means messages are being held by the broker for redelivery. Alert on it:
         // it is the difference between "a handler logged an error" and "delivery is backing up".
         this.unacknowledged = Counter.builder("mqtt.messages.unacknowledged").register(meters);
+        this.deadLettered = Counter.builder("mqtt.messages.dead_lettered").register(meters);
         meters.gauge("mqtt.connected", this, c -> c.isConnected() ? 1d : 0d);
         meters.gauge("mqtt.disconnects.total", this, c -> (double) c.disconnectCount.get());
     }
@@ -381,43 +391,136 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
 
         dispatcher.execute(
                 () -> {
-                    boolean allHandlersSucceeded = true;
+                    boolean safeToAcknowledge = true;
                     for (MqttSubscription sub : subscriptions) {
                         if (matches(sub.topicFilter(), topic)) {
-                            try {
-                                sub.handler().handle(topic, payload, ack);
-                            } catch (RuntimeException e) {
-                                // Never let a handler bubble out: on the dispatch thread it would
-                                // kill delivery for every other subscription too.
-                                allHandlersSucceeded = false;
-                                dispatchErrors.increment();
-                                log.error("Handler for {} failed on topic {}", sub.topicFilter(), topic, e);
-                            }
+                            safeToAcknowledge &= deliver(sub, topic, payload, ack);
                         }
                     }
 
                     if (props.isManualAcks()) {
                         return;
                     }
-                    if (allHandlersSucceeded) {
+                    if (safeToAcknowledge) {
                         acknowledge(messageId, qos, acknowledged);
                     } else {
                         // Deliberately NOT acknowledged. The broker keeps it and redelivers on the
                         // next session resume, which is the only reason a failed handler is not
                         // silent data loss.
                         //
-                        // The cost is worth stating: a message that always fails is redelivered on
-                        // every reconnect, and each unacknowledged message occupies a slot in the
-                        // inflight window. Enough of them and delivery stalls. A handler that cannot
-                        // succeed should catch its own exception and route the payload somewhere
-                        // (a dead-letter topic, a quarantine table) rather than throwing forever.
+                        // This branch is reached only when dead-lettering is off or itself failed.
+                        // Left unbounded it is a slow stall: each unacknowledged message holds an
+                        // inflight slot, and a message that can never succeed holds one forever.
+                        // Configure mqtt.dead-letter.* to bound it.
                         unacknowledged.increment();
                         log.warn(
-                                "Not acknowledging message on {} — a handler failed. It stays with"
-                                        + " the broker and will be redelivered on session resume.",
+                                "Not acknowledging message on {} — a handler failed and it was not"
+                                        + " dead-lettered. It stays with the broker and will be"
+                                        + " redelivered on session resume.",
                                 topic);
                     }
                 });
+    }
+
+    /**
+     * Runs one subscription's handler.
+     *
+     * @return whether it is safe to acknowledge — true if the handler succeeded, or if the failure
+     *     was recorded somewhere durable (the dead-letter topic) or is one that redelivery could
+     *     never fix
+     */
+    private boolean deliver(MqttSubscription sub, String topic, byte[] payload, MqttAcknowledgement ack) {
+        int maxAttempts = props.getDeadLetter().isEnabled()
+                ? Math.max(1, props.getDeadLetter().getMaxAttempts())
+                : 1;
+
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                sub.handler().handle(topic, payload, ack);
+                return true;
+            } catch (MqttPayloadConversionException e) {
+                // No retry: bytes that will not parse now will not parse on attempt two.
+                dispatchErrors.increment();
+                return deadLetter(sub, topic, payload, 1, MqttDeadLetter.Reason.PAYLOAD_UNDECODABLE, e)
+                        // Even with no dead-letter topic this is acknowledged. Holding an
+                        // unparseable message costs an inflight slot and buys nothing.
+                        || true;
+            } catch (RuntimeException e) {
+                // Never let a handler bubble out: on the dispatch thread it would kill delivery for
+                // every other subscription too.
+                lastFailure = e;
+                dispatchErrors.increment();
+                log.error("Handler for {} failed on topic {} (attempt {}/{})",
+                        sub.topicFilter(), topic, attempt, maxAttempts, e);
+            }
+        }
+        return deadLetter(sub, topic, payload, maxAttempts, MqttDeadLetter.Reason.HANDLER_FAILED, lastFailure);
+    }
+
+    /**
+     * Publishes a failed message to the dead-letter topic.
+     *
+     * @return whether the failure is now recorded somewhere durable. {@code false} means the caller
+     *     must withhold the acknowledgement — dead-lettering is off, or the publish itself failed,
+     *     and acknowledging would destroy the only remaining copy.
+     */
+    private boolean deadLetter(
+            MqttSubscription sub,
+            String topic,
+            byte[] payload,
+            int attempts,
+            MqttDeadLetter.Reason reason,
+            RuntimeException failure) {
+
+        MqttClientProperties.DeadLetter config = props.getDeadLetter();
+        if (!config.isEnabled() || !StringUtils.hasText(config.getTopic())) {
+            return false;
+        }
+        try {
+            String text = asUtf8(payload);
+            MqttDeadLetter entry =
+                    new MqttDeadLetter(
+                            topic,
+                            sub.topicFilter(),
+                            props.getClientId(),
+                            Instant.now(),
+                            attempts,
+                            reason,
+                            describe(failure),
+                            text,
+                            text != null ? null : Base64.getEncoder().encodeToString(payload));
+
+            // Not retained, deliberately: a retained dead letter would be replayed to every future
+            // subscriber of the dead-letter topic, long after it had been dealt with.
+            publish(config.getTopic(), codec.encode(entry), config.getQos(), false, null);
+            deadLettered.increment();
+            log.warn("Dead-lettered message from {} to {} after {} attempt(s): {}",
+                    topic, config.getTopic(), attempts, reason);
+            return true;
+        } catch (RuntimeException e) {
+            // The dead-letter publish itself failed. Withhold the acknowledgement so the broker
+            // keeps the original — losing it here would be the worst outcome of all.
+            log.error("Could not dead-letter message from {} to {}; withholding acknowledgement",
+                    topic, config.getTopic(), e);
+            return false;
+        }
+    }
+
+    private static String asUtf8(byte[] payload) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(payload)).toString();
+        } catch (CharacterCodingException e) {
+            return null;
+        }
+    }
+
+    private static String describe(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        Throwable root = failure.getCause() != null ? failure.getCause() : failure;
+        return root.getClass().getSimpleName() + ": " + root.getMessage();
     }
 
     private void acknowledge(int messageId, int qos, AtomicBoolean alreadyAcknowledged) {

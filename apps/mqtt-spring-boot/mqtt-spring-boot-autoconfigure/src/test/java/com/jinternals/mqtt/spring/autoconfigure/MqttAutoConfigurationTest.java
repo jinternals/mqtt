@@ -147,4 +147,44 @@ class MqttAutoConfigurationTest {
             return new MqttWill("status", new byte[] {1}, 1, true);
         }
     }
+
+    @Test
+    @DisplayName("dead-lettering is off by default — a starter must not publish to unasked-for topics")
+    void deadLetterOffByDefault() {
+        runner.withPropertyValues("mqtt.url=tcp://localhost:1883", "mqtt.client-id=test-client")
+                .run(context -> {
+                    MqttClientProperties.DeadLetter dl =
+                            context.getBean(MqttClientProperties.class).getDeadLetter();
+                    assertThat(dl.isEnabled()).isFalse();
+                    assertThat(dl.getTopic()).isNull();
+                    assertThat(dl.getMaxAttempts()).isEqualTo(1);
+                    assertThat(dl.getQos()).isEqualTo(1);
+                });
+    }
+
+    @Test
+    @DisplayName("dead-letter settings bind from mqtt.dead-letter.*")
+    void deadLetterBinds() {
+        runner.withPropertyValues(
+                        "mqtt.url=tcp://localhost:1883",
+                        "mqtt.client-id=test-client",
+                        "mqtt.dead-letter.enabled=true",
+                        "mqtt.dead-letter.topic=dlq/test",
+                        "mqtt.dead-letter.max-attempts=3")
+                .run(context -> {
+                    MqttClientProperties.DeadLetter dl =
+                            context.getBean(MqttClientProperties.class).getDeadLetter();
+                    assertThat(dl.isEnabled()).isTrue();
+                    assertThat(dl.getTopic()).isEqualTo("dlq/test");
+                    assertThat(dl.getMaxAttempts()).isEqualTo(3);
+                });
+    }
+
+    @Test
+    @DisplayName("manual-acks defaults to false: the connection acks after the listener returns")
+    void manualAcksDefault() {
+        runner.withPropertyValues("mqtt.url=tcp://localhost:1883", "mqtt.client-id=test-client")
+                .run(context -> assertThat(context.getBean(MqttClientProperties.class).isManualAcks())
+                        .isFalse());
+    }
 }
