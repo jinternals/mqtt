@@ -1,8 +1,7 @@
 package com.jinternals.mqtt.spring.core;
 
-import com.jinternals.mqtt.spring.annotation.MqttListener;
-import com.jinternals.mqtt.spring.listener.MqttListenerRegistry;
 import com.jinternals.mqtt.spring.support.MqttCodec;
+import com.jinternals.mqtt.spring.support.MqttPayloadConversionException;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -70,7 +69,7 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
 
     private final MqttClientProperties props;
     private final List<MqttSubscription> subscriptions = new CopyOnWriteArrayList<>();
-    private final MqttListenerRegistry listenerRegistry;
+    private final MqttSubscriptionSource subscriptionSource;
     private final MqttCodec codec;
     private final MqttWill will;
     private final MqttAsyncClient client;
@@ -91,13 +90,13 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
     public MqttConnection(
             MqttClientProperties props,
             List<MqttSubscription> subscriptions,
-            MqttListenerRegistry listenerRegistry,
+            MqttSubscriptionSource subscriptionSource,
             MqttWill will,
             MqttCodec codec,
             MeterRegistry meters) {
         this.props = props;
         this.subscriptions.addAll(subscriptions);
-        this.listenerRegistry = listenerRegistry;
+        this.subscriptionSource = subscriptionSource;
         this.codec = codec;
         this.will = will;
         try {
@@ -192,8 +191,8 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
         // Merged here rather than in the constructor: @MqttListener methods are discovered as beans
         // are initialised, which can happen after this bean is built. start() is run by the
         // lifecycle processor once every singleton exists, so by now the registry is complete.
-        if (listenerRegistry != null) {
-            subscriptions.addAll(listenerRegistry.all());
+        if (subscriptionSource != null) {
+            subscriptions.addAll(subscriptionSource.subscriptions());
         }
         if (subscriptions.isEmpty()) {
             log.info("No MQTT subscriptions declared; this client will publish only.");

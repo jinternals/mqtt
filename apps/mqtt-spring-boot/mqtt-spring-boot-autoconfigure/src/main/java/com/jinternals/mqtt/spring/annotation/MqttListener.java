@@ -1,6 +1,5 @@
 package com.jinternals.mqtt.spring.annotation;
 
-import com.jinternals.mqtt.spring.support.MqttCodec;
 
 import com.jinternals.mqtt.spring.core.MqttAckMode;
 import java.lang.annotation.Documented;
@@ -30,7 +29,7 @@ import java.lang.annotation.Target;
  *
  * <ul>
  *   <li><b>First parameter — the payload.</b> {@code byte[]} gets the raw bytes, {@code String}
- *       gets it as UTF-8, anything else is decoded from JSON by {@link MqttCodec}.
+ *       gets it as UTF-8, anything else is decoded from JSON by {@code MqttCodec}.
  *   <li><b>Optional second parameter — the topic.</b> Must be {@code String}. It is the concrete
  *       topic the message arrived on, which is how you recover the values behind {@code +}.
  * </ul>

@@ -3,6 +3,7 @@ package com.jinternals.mqtt.spring.listener;
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttConnection;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
+import com.jinternals.mqtt.spring.core.MqttSubscriptionSource;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -19,7 +20,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>Has no dependencies of its own, deliberately: it is instantiated early alongside the bean
  * post-processor, and anything it injected would be dragged into early initialisation with it.
  */
-public class MqttListenerRegistry {
+public class MqttListenerRegistry implements MqttSubscriptionSource {
 
     private final List<MqttSubscription> discovered = new CopyOnWriteArrayList<>();
 
@@ -29,6 +30,11 @@ public class MqttListenerRegistry {
 
     public List<MqttSubscription> all() {
         return List.copyOf(discovered);
+    }
+
+    @Override
+    public List<MqttSubscription> subscriptions() {
+        return all();
     }
 
     public int size() {

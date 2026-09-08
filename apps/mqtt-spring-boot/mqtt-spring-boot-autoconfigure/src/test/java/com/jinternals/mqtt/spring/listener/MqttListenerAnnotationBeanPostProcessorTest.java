@@ -7,7 +7,7 @@ import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
 import com.jinternals.mqtt.spring.core.MqttAckMode;
 import com.jinternals.mqtt.spring.core.MqttClientProperties;
-import com.jinternals.mqtt.spring.core.MqttPayloadConversionException;
+import com.jinternals.mqtt.spring.support.MqttPayloadConversionException;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
 import com.jinternals.mqtt.spring.support.MqttCodec;
 import com.fasterxml.jackson.databind.ObjectMapper;

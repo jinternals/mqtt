@@ -1,4 +1,4 @@
-package com.jinternals.mqtt.spring.core;
+package com.jinternals.mqtt.spring.support;
 
 /**
  * Raised when received bytes cannot be turned into the listener's payload type.

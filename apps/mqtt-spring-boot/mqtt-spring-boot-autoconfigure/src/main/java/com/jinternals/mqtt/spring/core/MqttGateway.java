@@ -1,6 +1,5 @@
 package com.jinternals.mqtt.spring.core;
 
-import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.support.MqttCodec;
 
 import java.nio.charset.StandardCharsets;
@@ -17,7 +16,7 @@ import org.springframework.util.Assert;
  *
  * <p>It exists because every publish site was otherwise repeating the same three steps — encode,
  * pick QoS, decide retain — and those are exactly the decisions that go quietly wrong. Pairing it
- * with {@link MqttListener} gives the starter a symmetric API: annotate to receive, inject this to
+ * with {@code @MqttListener} gives the starter a symmetric API: annotate to receive, inject this to
  * send.
  *
  * <h2>What "sent" means here</h2>

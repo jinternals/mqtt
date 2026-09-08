@@ -39,20 +39,32 @@ piece can be replaced.
 
 ```
 com.jinternals.mqtt.spring
-├── annotation/      @MqttListener
-├── autoconfigure/   MqttAutoConfiguration, MqttHealthAutoConfiguration
-├── core/            MqttConnection, MqttGateway, MqttSendOptions,
-│                    MqttSubscription, MqttWill, MqttClientProperties,
-│                    MqttPublishException
-├── health/          MqttHealthIndicator
-├── listener/        MqttListenerRegistry, MqttListenerAnnotationBeanPostProcessor
-└── support/         MqttCodec
+├── support/        MqttCodec, MqttPayloadConversionException
+├── core/           MqttConnection, MqttGateway, MqttSendOptions, MqttSubscription,
+│                   MqttSubscriptionSource, MqttMessageHandler, MqttAcknowledgement,
+│                   MqttAckMode, MqttWill, MqttClientProperties, MqttTopicFilter,
+│                   MqttDeadLetter, MqttPublishException
+├── annotation/     @MqttListener
+├── listener/       MqttListenerRegistry, MqttListenerAnnotationBeanPostProcessor
+├── health/         MqttHealthIndicator
+└── autoconfigure/  MqttAutoConfiguration, MqttHealthAutoConfiguration
 ```
 
-Dependencies point one way: `autoconfigure` → everything, `listener` → `core` +
-`support` + `annotation`, `core` → `support`. Nothing depends on `autoconfigure`,
-which is what lets the whole thing be used without Spring Boot's auto-config if
-someone wants to wire it by hand.
+Dependencies point strictly one way, with no cycles:
+
+```
+support  ←  core  ←  annotation  ←  listener
+             ↑                          ↑
+           health ─────────────── autoconfigure
+```
+
+`support` depends on nothing; nothing depends on `autoconfigure`, which is what
+lets the library be wired by hand without Spring Boot's auto-configuration.
+
+The one place that took work is `MqttConnection` needing whatever the annotation
+scan found. Rather than `core` importing `listener` — a cycle, and the end of
+`core` standing alone — `core` declares `MqttSubscriptionSource` and
+`MqttListenerRegistry` implements it. Dependency inversion, not relocation.
 
 ## Three decisions worth knowing about
 
@@ -275,7 +287,8 @@ Never for telemetry or health, whose whole value is that they survive an outage.
 |---|---|---|
 | `mqtt.url` | — | Activates the auto-configuration. |
 | `mqtt.client-id` | — | Required. Stable and unique. |
-| `mqtt.username` / `password` | — | Omit for anonymous brokers. |
+| `mqtt.username` | — | Omit for anonymous brokers. |
+| `mqtt.password` | — | From a secret store, never a checked-in file. |
 | `mqtt.clean-start` | `false` | Durable session. |
 | `mqtt.session-expiry` | `4294967295s` | Protocol max, i.e. never. |
 | `mqtt.qos` | `1` | Default publish/subscribe QoS. |

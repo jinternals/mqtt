@@ -45,7 +45,7 @@ public class MqttCodec {
     /**
      * Same, but reports why it failed.
      *
-     * @throws com.jinternals.mqtt.spring.core.MqttPayloadConversionException with the parser's own
+     * @throws MqttPayloadConversionException with the parser's own
      *     message as the cause, so a dead-letter entry says what was actually wrong with the bytes
      *     instead of only that something was
      */
@@ -53,7 +53,7 @@ public class MqttCodec {
         try {
             return mapper.readValue(payload, type);
         } catch (Exception e) {
-            throw new com.jinternals.mqtt.spring.core.MqttPayloadConversionException(type, e);
+            throw new MqttPayloadConversionException(type, e);
         }
     }
 

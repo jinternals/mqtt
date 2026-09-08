@@ -152,6 +152,10 @@ public class MqttClientProperties {
      */
     public static class DeadLetter {
 
+        /**
+         * Whether unhandleable messages are published to {@link #topic} and then acknowledged,
+         * instead of being withheld and redelivered indefinitely.
+         */
         private boolean enabled = false;
 
         /** Required when enabled. A single topic — the original topic travels in the payload. */
