@@ -93,7 +93,8 @@ Companion to [README.md](README.md), which explains the architecture.
 | **PKCS12 truststore** | Java services verify the broker chain against it; no JVM-wide trust modification. |
 | **Password authentication** | `allow_anonymous false`; random 24-char passwords per install, never committed. |
 | **Per-site ACLs** | Site 1's credential is confined to `sites/site1/…` — denial by *absence*, there is simply no rule granting it anything under another site. Verified at runtime: a forged cross-site publish is discarded. |
-| **Silent denial** | A forbidden publish still returns `PUBACK RC:0`; the broker acks then discards. Client return codes prove nothing about authorisation — check the subscriber or the broker log. |
+| **Silent denial** | A forbidden publish returns `PUBACK RC:0` on MQTT 3.1.1 — indistinguishable from success — and `RC:135` (`0x87 Not authorized`) on MQTT 5. Both measured. The bridge hop is 3.1.1, so it is the one connection that cannot be told. |
+| **Where ACL is enforced** | WRITE at publish; READ at delivery, per subscriber. A subscription to an unreadable topic is *granted* (SUBACK 0) and then never fed — so a silent feed can mean a missing grant rather than a missing publisher. |
 | **Asymmetric bridge grants** | The bridge may *write* telemetry/health but only *read* commands — it cannot be granted `sites/site1/#` write, or a site could inject commands to its own devices and bypass the cloud's authorisation entirely. |
 | **Read-only `observer`** | For the topic browser. Watches everything, publishes nothing; revocable without touching either service. |
 | **Non-root containers** | uid/gid 10001. |

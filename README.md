@@ -613,13 +613,86 @@ The `observer` account the topic browser uses is read-only and separate from bot
 services, so a debugging tool can never publish a pick by accident, and its access
 can be revoked without touching either application.
 
+### A command end to end, with every check it passes
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant CA as cloud-app<br/>(user cloud-app, v5)
+    participant CB as cloud-broker
+    participant EB as edge-broker-site1
+    participant EA as edge-app-site1<br/>(user edge-app, v5)
+
+    Op->>CA: POST /sites/site1/robots/arm-01/commands
+    CA->>CB: PUBLISH sites/site1/command/arm-01/req · QoS 1
+
+    rect rgba(22,163,74,0.10)
+        Note over CB: ACL, on publish — WRITE
+        CB->>CB: cloud-app may write sites/+/command/+/req ✓
+    end
+    CB-->>CA: PUBACK 0
+    CA-->>Op: 202 Accepted
+
+    rect rgba(22,163,74,0.10)
+        Note over CB: ACL, on delivery — READ (per subscriber)
+        CB->>CB: bridge-site1 may read sites/site1/command/+/req ✓
+    end
+    CB->>EB: deliver over the bridge (v3.1.1 hop)
+
+    rect rgba(22,163,74,0.10)
+        Note over EB: ACL, on delivery — READ
+        EB->>EB: edge-app may read sites/site1/command/+/req ✓
+    end
+    EB->>EA: PUBLISH command
+    EA->>EA: dedupe by commandId, check expiresAt, pick
+
+    EA->>EB: PUBLISH sites/site1/command/arm-01/res
+    rect rgba(22,163,74,0.10)
+        Note over EB: ACL — WRITE
+        EB->>EB: edge-app may write sites/site1/command/+/res ✓
+    end
+    EB->>CB: bridge-site1 writes .../res ✓
+    CB->>CA: deliver result (cloud-app may read .../res ✓)
+    CA-->>Op: GET /commands/{id} → ACCEPTED
+
+    rect rgba(220,38,38,0.10)
+        Note over EB,CB: what a compromised site 1 cannot do
+        EB->>CB: PUBLISH sites/site2/telemetry/forged
+        CB->>CB: bridge-site1 has no grant under sites/site2 ✗
+        CB--)EB: discarded — never routed to any subscriber
+        Note right of CB: v3.1.1 hop still sees PUBACK 0.<br/>An MQTT 5 client gets PUBACK 135<br/>(0x87 Not authorized).
+    end
+```
+
+Three things the trace makes concrete:
+
+- **Write is checked at publish; read is checked at delivery, per subscriber.** A
+  subscription to a topic you may not read is *accepted* — mosquitto grants the
+  SUBACK and then simply never delivers. So a silent feed can mean a missing ACL
+  grant, not a missing publisher.
+- **Every hop re-checks.** The command is authorised four times against three
+  brokers' rules on the way to a robot and back. Nothing is trusted because it
+  arrived over a bridge.
+- **The tenancy boundary is enforced on ingest**, not at the edge. A forged
+  cross-site publish dies at the cloud broker and is never routed to anyone.
+
 > **An ACL denial is silent to the publisher.** Publishing to a forbidden topic
 > still returns `PUBACK RC:0` — the broker accepts the packet and then discards the
 > message. Verified here: publishing `sites/site2/telemetry/forged` with the
 > `bridge-site1` credential is acked, and nothing ever arrives on that topic. So
 > "my publish succeeded" proves nothing about authorisation; check the subscriber
-> side or the broker log. (MQTT 5 *can* return `0x87 Not authorized` on PUBACK, but
-> the bridge hop here is 3.1.1, which has no reason codes to return.)
+> side or the broker log.
+>
+> Measured on this stack, publishing to a forbidden topic as `observer`:
+>
+> | Client protocol | PUBACK |
+> |---|---|
+> | MQTT 3.1.1 | `RC:0` — indistinguishable from success |
+> | MQTT 5 | `RC:135` (`0x87 Not authorized`) |
+>
+> Both services connect as v5 and would see the refusal. The bridge hop is 3.1.1
+> and would not — one more quiet cost of that version choice.
 
 - **Per-site tenancy via ACLs.** Site 1's bridge credential is confined to
   `sites/site1/…`. A compromised site-1 gateway cannot publish telemetry as site 2 or
