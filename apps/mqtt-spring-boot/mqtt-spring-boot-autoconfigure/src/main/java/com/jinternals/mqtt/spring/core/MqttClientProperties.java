@@ -68,6 +68,34 @@ public class MqttClientProperties {
      * round trips per message on the link least able to afford them. */
     private int qos = 1;
 
+    /**
+     * Who decides when a received message is acknowledged.
+     *
+     * <p><b>false (default)</b> — the connection acknowledges automatically, but only <em>after</em>
+     * the listener returns without throwing. A listener that fails is not acknowledged, so the
+     * broker keeps the message and redelivers it when the session next resumes. This is what makes
+     * QoS 1 mean at-least-once all the way to your code rather than only as far as the client
+     * library.
+     *
+     * <p><b>true</b> — the listener owns it, via an {@link MqttAcknowledgement} parameter. Use this
+     * when "handled" means something more than "the method returned": written to a database,
+     * committed to another queue, accepted by a device. Acknowledging before that point is how
+     * at-least-once quietly degrades to at-most-once.
+     *
+     * <p>Either way the starter takes acknowledgement control away from Paho. Paho's own auto-ack
+     * fires as soon as its callback returns, and because this client hands work to a dispatch
+     * thread, that would acknowledge before the listener had run at all.
+     */
+    private boolean manualAcks = false;
+
+    public boolean isManualAcks() {
+        return manualAcks;
+    }
+
+    public void setManualAcks(boolean manualAcks) {
+        this.manualAcks = manualAcks;
+    }
+
     /** Short, so a half-open socket is detected in seconds rather than at the OS TCP timeout. */
     private Duration keepAlive = Duration.ofSeconds(20);
 

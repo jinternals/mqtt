@@ -26,24 +26,59 @@
     {
       "name": "mqtt.url",
       "values": [
-        { "value": "ssl://broker:8883", "description": "TLS. What production should use." },
-        { "value": "tcp://localhost:1883", "description": "Plaintext. Local development only." }
+        {
+          "value": "ssl://broker:8883",
+          "description": "TLS. What production should use."
+        },
+        {
+          "value": "tcp://localhost:1883",
+          "description": "Plaintext. Local development only."
+        }
       ]
     },
     {
       "name": "mqtt.qos",
       "values": [
-        { "value": 0, "description": "At most once. Loses messages on an unreliable link." },
-        { "value": 1, "description": "At least once. The default; expect duplicates and handle them idempotently." },
-        { "value": 2, "description": "Exactly once. Two extra round trips per message." }
+        {
+          "value": 0,
+          "description": "At most once. Loses messages on an unreliable link."
+        },
+        {
+          "value": 1,
+          "description": "At least once. The default; expect duplicates and handle them idempotently."
+        },
+        {
+          "value": 2,
+          "description": "Exactly once. Two extra round trips per message."
+        }
       ]
     },
     {
       "name": "mqtt.persistence-directory",
       "values": [
-        { "value": "", "description": "In-memory: in-flight QoS 1 messages are lost on restart." }
+        {
+          "value": "",
+          "description": "In-memory: in-flight QoS 1 messages are lost on restart."
+        }
       ],
-      "providers": [ { "name": "any" } ]
+      "providers": [
+        {
+          "name": "any"
+        }
+      ]
+    },
+    {
+      "name": "mqtt.manual-acks",
+      "values": [
+        {
+          "value": false,
+          "description": "The connection acknowledges after the listener returns without throwing. A failing listener is not acknowledged, so the broker redelivers on session resume."
+        },
+        {
+          "value": true,
+          "description": "The listener owns acknowledgement via an MqttAcknowledgement parameter. Use when 'handled' means durable somewhere else."
+        }
+      ]
     }
   ]
 }

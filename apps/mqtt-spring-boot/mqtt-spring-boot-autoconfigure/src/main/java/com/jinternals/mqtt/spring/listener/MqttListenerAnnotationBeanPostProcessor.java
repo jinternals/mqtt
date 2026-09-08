@@ -2,6 +2,7 @@ package com.jinternals.mqtt.spring.listener;
 
 import com.jinternals.mqtt.spring.annotation.MqttListener;
 import com.jinternals.mqtt.spring.core.MqttConnection;
+import com.jinternals.mqtt.spring.core.MqttAcknowledgement;
 import com.jinternals.mqtt.spring.core.MqttSubscription;
 import com.jinternals.mqtt.spring.support.MqttCodec;
 
@@ -83,15 +84,15 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
         Method invocable = AopUtils.selectInvocableMethod(method, bean.getClass());
         ReflectionUtils.makeAccessible(invocable);
 
-        Class<?> payloadType = method.getParameterTypes()[0];
-        boolean wantsTopic = method.getParameterCount() == 2;
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        Class<?> payloadType = parameterTypes[0];
 
         registry.register(
                 new MqttSubscription(
                         topic,
                         listener.qos(),
-                        (receivedTopic, payload) ->
-                                invoke(bean, invocable, payloadType, wantsTopic, receivedTopic, payload)));
+                        (receivedTopic, payload, ack) ->
+                                invoke(bean, invocable, parameterTypes, payloadType, receivedTopic, payload, ack)));
 
         log.info(
                 "Registered @MqttListener {}#{} on '{}' qos={}",
@@ -104,24 +105,38 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
     private void invoke(
             Object bean,
             Method method,
+            Class<?>[] parameterTypes,
             Class<?> payloadType,
-            boolean wantsTopic,
             String topic,
-            byte[] raw) {
+            byte[] raw,
+            MqttAcknowledgement ack) {
 
         Object payload = convert(raw, payloadType);
         if (payload == null) {
-            // convert() already logged. Dropping one bad message must not break the subscription.
+            // convert() already logged. A single undecodable payload is dropped rather than thrown:
+            // otherwise one malformed retained message, or one old schema replayed out of a bridge
+            // backlog, would fail forever and stall the subscription behind it.
+            //
+            // It is acknowledged for the same reason. Refusing to acknowledge something that can
+            // never succeed just parks it in the inflight window until delivery stops.
+            ack.acknowledge();
             return;
         }
+
+        // Arguments after the payload are resolved by TYPE, not position, so (payload, ack) and
+        // (payload, topic, ack) are both unambiguous.
+        Object[] args = new Object[parameterTypes.length];
+        args[0] = payload;
+        for (int i = 1; i < parameterTypes.length; i++) {
+            args[i] = parameterTypes[i] == MqttAcknowledgement.class ? ack : topic;
+        }
+
         try {
-            if (wantsTopic) {
-                method.invoke(bean, payload, topic);
-            } else {
-                method.invoke(bean, payload);
-            }
+            method.invoke(bean, args);
         } catch (InvocationTargetException e) {
             // Unwrap so the listener's own exception is what gets reported, not the reflection call.
+            // Rethrowing matters: MqttConnection reads it as "not handled" and withholds the
+            // acknowledgement, so the broker keeps the message for redelivery.
             throw new IllegalStateException(
                     "@MqttListener " + method.getName() + " failed for topic " + topic,
                     e.getTargetException());
@@ -145,18 +160,38 @@ public class MqttListenerAnnotationBeanPostProcessor implements BeanPostProcesso
     }
 
     private void validate(Method method) {
-        int count = method.getParameterCount();
-        if (count < 1 || count > 2) {
+        Class<?>[] types = method.getParameterTypes();
+        if (types.length < 1 || types.length > 3) {
             throw new IllegalStateException(
                     "@MqttListener method "
                             + method
-                            + " must take (payload) or (payload, String topic)");
+                            + " must take (payload) plus optionally a String topic and/or an"
+                            + " MqttAcknowledgement, in any order after the payload");
         }
-        if (count == 2 && method.getParameterTypes()[1] != String.class) {
-            throw new IllegalStateException(
-                    "@MqttListener method "
-                            + method
-                            + " second parameter must be String (the topic the message arrived on)");
+        boolean seenTopic = false;
+        boolean seenAck = false;
+        for (int i = 1; i < types.length; i++) {
+            if (types[i] == String.class) {
+                if (seenTopic) {
+                    throw new IllegalStateException(
+                            "@MqttListener method " + method + " declares the topic parameter twice");
+                }
+                seenTopic = true;
+            } else if (types[i] == MqttAcknowledgement.class) {
+                if (seenAck) {
+                    throw new IllegalStateException(
+                            "@MqttListener method " + method + " declares the acknowledgement twice");
+                }
+                seenAck = true;
+            } else {
+                throw new IllegalStateException(
+                        "@MqttListener method "
+                                + method
+                                + " has unsupported parameter "
+                                + types[i].getName()
+                                + "; after the payload only String (topic) and MqttAcknowledgement"
+                                + " are resolved");
+            }
         }
     }
 

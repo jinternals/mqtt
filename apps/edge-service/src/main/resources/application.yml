@@ -40,6 +40,11 @@ mqtt:
   # deadline, and it lives on the message, not on the session.
   session-expiry: 4294967295s
   qos: 1
+  # false = the starter acknowledges only after the listener returns cleanly. A
+  # listener that throws is not acknowledged, so the broker keeps the message and
+  # redelivers it on session resume -- which is what makes QoS 1 mean
+  # at-least-once all the way into our code, not just as far as Paho.
+  manual-acks: false
   keep-alive: 20s
   connection-timeout: 10s
   max-reconnect-delay: 30s

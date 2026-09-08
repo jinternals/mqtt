@@ -375,6 +375,13 @@ you want it to mean.
 
 ## At-least-once means duplicates
 
+Acknowledgement is the hinge. The starter takes ack control from Paho and
+acknowledges only **after** a listener returns cleanly (`mqtt.manual-acks=false`).
+Paho's own auto-ack fires as soon as its callback returns — and because the client
+hands work to a dispatch thread, that would acknowledge before the listener ran,
+making QoS 1 at-least-once only as far as the library. A listener that throws is
+not acknowledged, so the broker keeps the message and redelivers it.
+
 QoS 1 plus a bridge that replays on reconnect means a command **will** sometimes
 arrive twice. `CommandExecutor` keeps a bounded LRU of recent `commandId`s; a
 repeat is answered `DUPLICATE` and not re-executed.
@@ -618,7 +625,7 @@ mosquitto_sub -h localhost -p 8883 --cafile certs/ca.crt \
 ## Tests
 
 ```bash
-(cd apps/mqtt-spring-boot && mvn test)   # 26 — auto-config, listener discovery, wildcards
+(cd apps/mqtt-spring-boot && mvn test)   # 29 — auto-config, listener discovery, acks, wildcards
 (cd apps/cloud-service    && mvn test)   #  7 — replay, gaps, staleness, LWT
 (cd apps/edge-service     && mvn test)   #  8 — expiry boundaries, topic scheme
 ```

@@ -83,20 +83,63 @@ existence before the context was ready. `MqttConnection` drains the registry in
 
 ## `@MqttListener` signatures
 
-The parameter rule is positional and deliberately boring, because clever parameter
-resolution is the part of these annotations people end up debugging.
+**The first parameter is the payload.** Anything after it is resolved by *type*, so
+order does not matter and there is nothing to memorise.
 
-| Signature | Payload |
+| Parameter | Meaning |
 |---|---|
-| `void m(T payload)` | decoded from JSON |
-| `void m(byte[] payload)` | raw bytes |
-| `void m(String payload)` | UTF-8 string |
-| `void m(T payload, String topic)` | plus the concrete topic — how you recover what `+` matched |
+| 1st: `T` | decoded from JSON |
+| 1st: `byte[]` | raw bytes |
+| 1st: `String` | UTF-8 string |
+| `String` (after the 1st) | the concrete topic — how you recover what `+` matched |
+| `MqttAcknowledgement` | ack handle; only meaningful with `mqtt.manual-acks=true` |
 
 `topic` is resolved against the `Environment`, so `${...}` placeholders work. An
-undecodable payload is logged and dropped, never thrown: one malformed message must
-not take down delivery for every other device. An unusable signature fails at
-startup, not on the first message.
+unusable signature fails at startup, not on the first message.
+
+## Acknowledgement: `mqtt.manual-acks`
+
+The starter always takes ack control away from Paho. Paho's auto-ack fires as soon
+as its callback returns, and this client hands work to a dispatch thread — so
+leaving it on would acknowledge every message *before the listener had run*, making
+QoS 1 at-least-once only as far as the library and at-most-once beyond it.
+
+**`false` (default)** — the connection acknowledges after the listener returns
+without throwing:
+
+```java
+@MqttListener(topic = "sites/+/telemetry/+")
+void onTelemetry(Telemetry t) {
+    registry.record(t);          // throws? → not acknowledged → broker redelivers
+}
+```
+
+**`true`** — the listener owns it, for when "handled" means more than "the method
+returned":
+
+```java
+@MqttListener(topic = "sites/+/telemetry/+")
+void onTelemetry(Telemetry t, MqttAcknowledgement ack) {
+    repository.save(t);          // durable somewhere else first
+    ack.acknowledge();           // only now may the broker forget it
+}
+```
+
+Three consequences worth knowing before choosing:
+
+- A withheld acknowledgement is redelivered on **session resume**, not immediately.
+  A failed message can wait until the connection next cycles.
+- Each unacknowledged message occupies a slot in the inflight window. Enough of them
+  and delivery stalls — deliberate backpressure, but it is a stall.
+- So a message that can *never* succeed must not be withheld forever. An undecodable
+  payload is therefore logged, dropped **and acknowledged**: refusing to ack
+  something unparseable just parks it in the window until delivery stops. Route
+  genuine poison to a dead-letter topic from inside the listener rather than
+  throwing on every redelivery.
+
+Watch `mqtt.messages.unacknowledged` — non-zero means the broker is holding
+messages for redelivery, which is the difference between "a handler logged an
+error" and "delivery is backing up".
 
 ## Sending
 
@@ -123,6 +166,7 @@ Never for telemetry or health, whose whole value is that they survive an outage.
 | `mqtt.clean-start` | `false` | Durable session. |
 | `mqtt.session-expiry` | `4294967295s` | Protocol max, i.e. never. |
 | `mqtt.qos` | `1` | Default publish/subscribe QoS. |
+| `mqtt.manual-acks` | `false` | `false` acks after the listener returns cleanly; `true` hands it to the listener. |
 | `mqtt.keep-alive` | `20s` | Short, to detect half-open sockets. |
 | `mqtt.connection-timeout` | `10s` | |
 | `mqtt.max-reconnect-delay` | `30s` | Backoff ceiling. |
@@ -132,8 +176,9 @@ Never for telemetry or health, whose whole value is that they survive an outage.
 
 ## Metrics and health
 
-`mqtt.messages.published`, `mqtt.messages.received`, `mqtt.dispatch.errors`,
-`mqtt.connected`, `mqtt.disconnects.total`.
+`mqtt.messages.published`, `mqtt.messages.received`, `mqtt.messages.acknowledged`,
+`mqtt.messages.unacknowledged`, `mqtt.dispatch.errors`, `mqtt.connected`,
+`mqtt.disconnects.total`.
 
 `/actuator/health` reports the broker connection, honouring
 `management.health.mqtt.enabled=false`. Actuator is an optional dependency: without
@@ -141,7 +186,7 @@ it on the classpath the health auto-configuration simply does not load.
 
 ## Tests
 
-26 tests, all using `ApplicationContextRunner` — no broker is contacted.
+29 tests, all using `ApplicationContextRunner` — no broker is contacted.
 
 ```bash
 mvn test

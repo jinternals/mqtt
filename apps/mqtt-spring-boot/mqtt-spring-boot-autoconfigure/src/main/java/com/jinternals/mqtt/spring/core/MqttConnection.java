@@ -78,6 +78,8 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
     private final Counter published;
     private final Counter received;
     private final Counter dispatchErrors;
+    private final Counter acknowledged;
+    private final Counter unacknowledged;
 
     public MqttConnection(
             MqttClientProperties props,
@@ -96,6 +98,12 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
             throw new IllegalStateException("Cannot create MQTT client for " + props.getUrl(), e);
         }
         this.client.setCallback(this);
+
+        // Take acknowledgement control away from Paho, in BOTH modes. Paho's auto-ack fires the
+        // moment its callback returns, and messageArrived() below only hands work to a dispatch
+        // thread -- so leaving it on would acknowledge every message before the listener had run,
+        // making QoS 1 at-least-once only as far as this library and at-most-once beyond it.
+        this.client.setManualAcks(true);
 
         this.reconnectScheduler =
                 Executors.newSingleThreadScheduledExecutor(
@@ -128,6 +136,10 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
         this.published = Counter.builder("mqtt.messages.published").register(meters);
         this.received = Counter.builder("mqtt.messages.received").register(meters);
         this.dispatchErrors = Counter.builder("mqtt.dispatch.errors").register(meters);
+        this.acknowledged = Counter.builder("mqtt.messages.acknowledged").register(meters);
+        // Non-zero here means messages are being held by the broker for redelivery. Alert on it:
+        // it is the difference between "a handler logged an error" and "delivery is backing up".
+        this.unacknowledged = Counter.builder("mqtt.messages.unacknowledged").register(meters);
         meters.gauge("mqtt.connected", this, c -> c.isConnected() ? 1d : 0d);
         meters.gauge("mqtt.disconnects.total", this, c -> (double) c.disconnectCount.get());
     }
@@ -355,22 +367,73 @@ public class MqttConnection implements SmartLifecycle, MqttCallback {
     @Override
     public void messageArrived(String topic, MqttMessage message) {
         received.increment();
+
+        // Captured before handing off: the dispatch thread needs them to acknowledge, and Paho may
+        // reuse the MqttMessage instance once this method returns.
+        int messageId = message.getId();
+        int qos = message.getQos();
         byte[] payload = message.getPayload();
+
+        // One acknowledgement per delivery, however many subscriptions match, and safe to call more
+        // than once so a manual-mode listener retrying does not have to remember whether it did.
+        AtomicBoolean acknowledged = new AtomicBoolean(false);
+        MqttAcknowledgement ack = () -> acknowledge(messageId, qos, acknowledged);
+
         dispatcher.execute(
                 () -> {
+                    boolean allHandlersSucceeded = true;
                     for (MqttSubscription sub : subscriptions) {
                         if (matches(sub.topicFilter(), topic)) {
                             try {
-                                sub.handler().accept(topic, payload);
+                                sub.handler().handle(topic, payload, ack);
                             } catch (RuntimeException e) {
                                 // Never let a handler bubble out: on the dispatch thread it would
                                 // kill delivery for every other subscription too.
+                                allHandlersSucceeded = false;
                                 dispatchErrors.increment();
                                 log.error("Handler for {} failed on topic {}", sub.topicFilter(), topic, e);
                             }
                         }
                     }
+
+                    if (props.isManualAcks()) {
+                        return;
+                    }
+                    if (allHandlersSucceeded) {
+                        acknowledge(messageId, qos, acknowledged);
+                    } else {
+                        // Deliberately NOT acknowledged. The broker keeps it and redelivers on the
+                        // next session resume, which is the only reason a failed handler is not
+                        // silent data loss.
+                        //
+                        // The cost is worth stating: a message that always fails is redelivered on
+                        // every reconnect, and each unacknowledged message occupies a slot in the
+                        // inflight window. Enough of them and delivery stalls. A handler that cannot
+                        // succeed should catch its own exception and route the payload somewhere
+                        // (a dead-letter topic, a quarantine table) rather than throwing forever.
+                        unacknowledged.increment();
+                        log.warn(
+                                "Not acknowledging message on {} — a handler failed. It stays with"
+                                        + " the broker and will be redelivered on session resume.",
+                                topic);
+                    }
                 });
+    }
+
+    private void acknowledge(int messageId, int qos, AtomicBoolean alreadyAcknowledged) {
+        if (qos == 0 || !alreadyAcknowledged.compareAndSet(false, true)) {
+            // QoS 0 has nothing to acknowledge, and a second call is a no-op rather than an error.
+            return;
+        }
+        try {
+            client.messageArrivedComplete(messageId, qos);
+            acknowledged.increment();
+        } catch (MqttException e) {
+            // The connection dropped before we could acknowledge. Correct outcome anyway: the
+            // broker never saw an ack, so it still owns the message and will redeliver it.
+            alreadyAcknowledged.set(false);
+            log.warn("Could not acknowledge message {}: {}", messageId, e.getMessage());
+        }
     }
 
     @Override
