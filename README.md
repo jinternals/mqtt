@@ -385,13 +385,23 @@ CONNECT their bridge actually sends:
 | NanoMQ + `conn_properties.session_expiry_interval` | `4294967295` | yes | **yes** |
 | EMQX 6.3.0 `connectors.mqtt` | absent | **no — random per restart** | no |
 
-So MQTT 5 end to end *is* reachable, via NanoMQ with one extra config block —
-confirmed functionally, not just on the wire: the same NanoMQ bridge delivers a
-command queued through an outage with that property and loses it without.
+So MQTT 5 on the hop is reachable — but testing the *other* direction ruled the
+swap out. Session expiry only fixes commands queued **into** a site. Telemetry
+durability is the outbound path, and the official NanoMQ image drops it:
 
-The cost is porting each site broker's TLS, credentials and per-site ACLs to a
-second config language. [`docs/mqtt5-bridge-durability.md`](docs/mqtt5-bridge-durability.md)
-has the method, the full results and the recommendation.
+| | mosquitto (current) | NanoMQ, official image |
+|---|---|---|
+| MQTT 5 on the bridge hop | no | **yes** |
+| Commands queued for an absent site | **yes** | **yes** |
+| Telemetry spooled while the uplink is down | **yes** | **no — 5 of 5 lost** |
+
+Its own log says `Msg lost! put msg to ctx_msgs failed!`, and the `sqlite` cache
+block that should prevent this is silently inert — the feature is not compiled in
+(`strings $(command -v nanomq) | grep -c sqlite3_` → `0`).
+
+Swapping as shipped would fix the lesser problem and break the greater one, so the
+3.1.1 hop stays. [`docs/mqtt5-bridge-durability.md`](docs/mqtt5-bridge-durability.md)
+has the method, all results and the order of work if this is ever revisited.
 
 ---
 
