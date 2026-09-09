@@ -375,6 +375,24 @@ Confirmed in mosquitto 2.0.22's source rather than inferred from behaviour:
 In 3.1.1 there is no expiry property to omit, and `cleansession false` means what
 you want it to mean.
 
+**Is this mosquitto-specific?** Partly. Four brokers were measured by decoding the
+CONNECT their bridge actually sends:
+
+| Bridge broker (MQTT 5) | Session Expiry sent | Stable client id | Durable |
+|---|---|---|---|
+| mosquitto 2.0.22 | absent | yes | no |
+| NanoMQ, default | absent | yes | no |
+| NanoMQ + `conn_properties.session_expiry_interval` | `4294967295` | yes | **yes** |
+| EMQX 6.3.0 `connectors.mqtt` | absent | **no — random per restart** | no |
+
+So MQTT 5 end to end *is* reachable, via NanoMQ with one extra config block —
+confirmed functionally, not just on the wire: the same NanoMQ bridge delivers a
+command queued through an outage with that property and loses it without.
+
+The cost is porting each site broker's TLS, credentials and per-site ACLs to a
+second config language. [`docs/mqtt5-bridge-durability.md`](docs/mqtt5-bridge-durability.md)
+has the method, the full results and the recommendation.
+
 ---
 
 ## At-least-once means duplicates
