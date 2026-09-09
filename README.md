@@ -395,9 +395,9 @@ durability is the outbound path, and the official NanoMQ image drops it:
 | Commands queued for an absent site | **yes** | **yes** |
 | Telemetry spooled while the uplink is down | **yes** | **no — 5 of 5 lost** |
 
-Its own log says `Msg lost! put msg to ctx_msgs failed!`, and the `sqlite` cache
-block that should prevent this is silently inert — the feature is not compiled in
-(`strings $(command -v nanomq) | grep -c sqlite3_` → `0`).
+Its own log says `Msg lost! put msg to ctx_msgs failed!`. The documented
+`bridges.mqtt.cache` SQLite spool never wrote a file, and on the `-full` image the
+broker **segfaults** on that code path — reproduced on both arm64 and amd64.
 
 Swapping as shipped would fix the lesser problem and break the greater one, so the
 3.1.1 hop stays. [`docs/mqtt5-bridge-durability.md`](docs/mqtt5-bridge-durability.md)

@@ -80,53 +80,72 @@ one property. That isolates the cause rather than inferring it.
 
 Session expiry fixes the **inbound** path — commands queued by the cloud for an
 absent site. It says nothing about the **outbound** path, which is where telemetry
-durability lives and which is the guarantee this whole system is built on
-(`missed=0` across an outage).
+durability lives and which is what `missed=0` refers to.
 
-Tested the same way, with a site LAN separate from the WAN so the edge stayed
-reachable while its uplink was cut: publish to the edge broker with the WAN down,
-restore, count what reached the cloud.
+NanoMQ documents exactly this: an embedded SQLite spool so QoS 1/2 messages
+survive a disconnected uplink without holding them all in RAM. The feature is
+real and it is the right design for an edge gateway. The question is only whether
+it works in the shipped images.
 
-| Messages published to the edge during the outage | Reached the cloud |
-|---|---|
-| 5 | **0** |
+### Method
 
-NanoMQ says so itself, in its own log:
+Site LAN separate from the WAN, so the edge broker stays reachable while its
+uplink is cut — the same shape as the real deployment. Publish five QoS 1
+messages to the edge with the WAN down, restore, count what reaches the cloud.
+
+The cache block goes at top level, *beside* the bridge rather than inside it:
+
+```hocon
+bridges.mqtt.cache {
+    disk_cache_size     = 102400
+    mounted_file_path   = "/tmp/"
+    flush_mem_threshold = 10
+    resend_interval     = 2000
+}
+```
+
+(An earlier run of this test used a top-level `sqlite { ... }` block, which is
+what the upstream example config shows for broker-level persistence. That is the
+wrong key for the bridge cache and the results from it were void. Everything
+below uses `bridges.mqtt.cache`.)
+
+### Results
+
+| Image | Arch | Cache file created | Delivered after restore | Broker survived |
+|---|---|---|---|---|
+| `emqx/nanomq:latest` | arm64 | no | **2 of 7** | yes |
+| `emqx/nanomq:latest-full` | arm64 | no | **2 of 7** | **no — SIGSEGV** |
+| `emqx/nanomq:latest-full` | amd64 | no | **2 of 7** | **no — SIGSEGV** |
+
+Messages 1 and 2 were the pre-outage baseline; 3 to 7 were published during it.
+None of them arrived, under any combination.
+
+On the base image the broker stays up and simply drops them, saying so:
 
 ```
 bridge_pub_handler: Cached Message in ctx_msgs is lost!
 bridge_pub_handler: Msg lost! put msg to ctx_msgs failed!
 ```
 
-The `sqlite { disk_cache_size = ... }` block that is supposed to provide the
-disk-backed bridge cache was configured and had no effect. The reason is that the
-feature is not compiled into the official image:
+On the `-full` image — the variant that carries the optional features — the
+broker **segfaults** on that same code path:
 
 ```
-$ strings $(command -v nanomq) | grep -c sqlite3_
-0
+broker.c:118 sig_handler: signal signumber: 11 received!
 ```
 
-Zero SQLite symbols, no cache file created, and **no warning that the
-configuration was ignored** — a durability setting that silently does nothing is
-worse than one that is absent.
+Reproduced on both architectures, so this is not an emulation artefact.
 
-## Verdict
+No SQLite file was ever written to `mounted_file_path` in any run.
 
-| | mosquitto (current) | NanoMQ, official image |
-|---|---|---|
-| MQTT 5 on the bridge hop | no | **yes** |
-| Commands queued for an absent site | **yes** (3.1.1) | **yes** (with `conn_properties`) |
-| Telemetry spooled while the uplink is down | **yes** | **no — measured, 5 of 5 lost** |
+### Reading this fairly
 
-Swapping to NanoMQ as shipped would fix the lesser problem and break the greater
-one. Commands already survive an outage today; telemetry durability is the thing
-`missed=0` refers to, and it would go.
-
-NanoMQ *can* do it — the SQLite cache exists upstream behind
-`-DNNG_ENABLE_SQLITE=ON`. Taking that path means building and maintaining a custom
-NanoMQ image and re-running this outbound test against it, on top of the ACL port
-below. That is a different and much larger commitment than a config change.
+The documentation is not wrong that the feature exists, and it may well work in a
+build or version not tested here. What can be said from measurement is narrower
+and still decisive for this decision: **with the current official images and the
+documented configuration, a message published while the bridge is down does not
+survive** — and on the full image the broker does not survive either. That is
+worth reporting upstream rather than working around.
 
 ## What this would cost
 
@@ -166,8 +185,8 @@ Revisit only if a v5-only feature is genuinely needed across that hop
 (per-message expiry enforced at the site, or reason codes surfaced to the bridge).
 The order of work would then be:
 
-1. build NanoMQ with `-DNNG_ENABLE_SQLITE=ON` and re-run the outbound spool test
-   in this document — if that fails, stop;
+1. find or build a NanoMQ image where the outbound spool test in this document
+   passes — if none exists, stop;
 2. port TLS, credentials and per-site ACLs to HOCON and re-verify them;
 3. only then change the bridge protocol version.
 
